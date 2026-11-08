@@ -1,0 +1,6 @@
+build/
+build-*/
+*.fsf
+.vscode/
+**/*.sf2
+__pycache__/

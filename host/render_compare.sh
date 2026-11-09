@@ -9,6 +9,13 @@
 # Extra MIDI files given on the command line are copied in first (spaces in
 # their names are replaced with underscores).
 #
+# Requirements: the host tools built in build-host (cmake -S host -B
+# build-host && cmake --build build-host), TimGM6mb.sf2 in the project root,
+# python3 and fluidsynth. The font is converted once into
+# build-host/TimGM6mb.fsf; delete that file to force a reconversion after
+# changing sf2conv. Both renders are at 44.1 kHz; compare them by ear or
+# with host/compare_wav.py.
+#
 set -e
 P=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$P/build-host/test

@@ -6,6 +6,11 @@ Usage: compare_wav.py ours.wav reference.wav [segment_seconds]
 Prints overall level difference, correlation of the loudness envelopes,
 spectral centroid (brightness) and, with segment_seconds, the segments whose
 level differs the most (useful with gm_tour.mid, one program per 1.5 s).
+
+Both files must be 16-bit PCM WAV at the same sample rate (fsrender and
+FluidSynth both write that). Level, envelope and centroid figures use the
+mono mix and only the overlapping length; peak and stereo width use the
+full files. Requires numpy.
 """
 import sys
 import wave
@@ -14,6 +19,12 @@ import numpy as np
 
 
 def load(path):
+    """Read a 16-bit PCM WAV file.
+
+    Returns (rate, mono, frames): the sample rate, the channel mean as a 1-D
+    float array and all channels as a (frames, channels) array, both scaled
+    to [-1, 1).
+    """
     with wave.open(path, "rb") as w:
         rate = w.getframerate()
         ch = w.getnchannels()
@@ -23,16 +34,23 @@ def load(path):
 
 
 def db(x):
+    """Amplitude to dB (20 log10), floored at -180 dB so silence is finite."""
     return 20 * np.log10(np.maximum(x, 1e-9))
 
 
 def rms_env(x, win):
+    """RMS level of each whole window of win samples (a partial last window
+    is dropped)."""
     n = len(x) // win
     return np.sqrt(np.mean(x[: n * win].reshape(n, win) ** 2, axis=1))
 
 
 def centroid(x, rate):
-    # Average spectral centroid over 4096-sample frames with energy
+    """Mean spectral centroid of x in Hz: a measure of brightness.
+
+    Computed over Hann-windowed 4096-sample frames, skipping near-silent
+    ones; 0.0 if no frame has energy.
+    """
     n = 4096
     frames = len(x) // n
     cs = []
@@ -47,6 +65,7 @@ def centroid(x, rate):
 
 
 def main():
+    """Parse the command line, print the comparison (see module docstring)."""
     if len(sys.argv) < 3:
         print(__doc__)
         sys.exit(2)

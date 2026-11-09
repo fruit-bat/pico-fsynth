@@ -60,6 +60,7 @@ set(FS_FW_DIR ${CMAKE_CURRENT_LIST_DIR}/firmware)
 add_executable(pico_fsynth
     ${FS_FW_DIR}/main.c
     ${FS_FW_DIR}/midi_in.c
+    ${FS_FW_DIR}/midi_parse.c
     ${FS_FW_DIR}/settings.c
     ${FS_FW_DIR}/usb_descriptors.c
     ${FS_CORE_DIR}/fs_gen.c

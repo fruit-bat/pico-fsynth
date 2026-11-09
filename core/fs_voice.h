@@ -1,6 +1,25 @@
 #pragma once
 //
-// A single playing region: sample stream, envelopes, LFOs, filter and gains.
+// fs_voice.h - a single playing region: sample stream, envelopes, LFOs,
+// filter and gains.
+//
+// One note-on starts one voice per matching region (fs_synth.c does the
+// matching and allocation). A voice follows the SF2 synthesis model:
+//
+//   sample -> interpolate at pitch -> low pass filter -> amplitude -> pan
+//          -> left/right buses, plus reverb and chorus send buses
+//
+// with pitch, cutoff and amplitude driven by a volume envelope, a
+// modulation envelope, a modulation LFO and a vibrato LFO, and by
+// modulators (MIDI controllers) evaluated from the channel state.
+//
+// Control-rate values (envelopes, LFOs, pitch, filter coefficients) are
+// updated once per block of FS_BLOCK_SIZE frames; the amplitude is ramped
+// linearly across the block so steps are not audible.
+//
+// Lifecycle: FS_VOICE_FREE -> fs_voice_start -> ON -> (SUSTAINED, if the
+// pedal is down at note-off) -> fs_voice_release -> RELEASED -> render
+// returns false -> fs_synth frees it. fs_voice_kill is a fast release.
 //
 #include <stdint.h>
 #include <stdbool.h>
@@ -8,6 +27,8 @@
 #include "fs_font.h"
 #include "fs_stream.h"
 
+// Envelope stages, in order. The order matters: code compares stages with
+// < and >=.
 typedef enum {
     FS_ENV_DELAY = 0,
     FS_ENV_ATTACK,
@@ -34,6 +55,7 @@ typedef struct {
     float sustain;          // Sustain level
 } FsEnv;
 
+// Triangle LFO, evaluated once per block.
 typedef struct {
     uint32_t delay;         // Samples before the LFO starts
     float phase;            // [0, 1)
@@ -41,6 +63,7 @@ typedef struct {
     float value;            // Current output [-1, 1]
 } FsLfo;
 
+// Voice state, as the synth sees it (the envelopes have their own stages).
 typedef enum {
     FS_VOICE_FREE = 0,
     FS_VOICE_ON,            // Key held
@@ -50,8 +73,11 @@ typedef enum {
 
 struct FsChannel;
 
+// One voice. Lives in the FsSynth voice pool and is reused; fs_voice_start
+// initialises every field that matters, so no clearing is needed between
+// notes. Units are SF2 units unless noted (see fs_math.h).
 typedef struct {
-    uint8_t state;
+    uint8_t state;              // FsVoiceState
     uint8_t channel;
     uint8_t key;                // MIDI key that started the voice
     uint8_t vel;
@@ -115,6 +141,9 @@ typedef struct {
     float last_r;
 } FsVoice;
 
+// MIDI channel state: everything the modulators can read. Owned by the
+// synth; voices only read it. Any change must increment serial so voices
+// re-evaluate their modulators (see FsVoice.chan_serial).
 typedef struct FsChannel {
     uint8_t program;
     uint16_t bank;
@@ -123,11 +152,13 @@ typedef struct FsChannel {
     uint8_t pressure;
     uint8_t pitch_bend_range;   // Semitones (RPN 0)
     uint16_t rpn;               // Selected RPN (0x3fff = none)
-    bool drums;
+    bool drums;                 // Channel 10: always plays bank 128
     uint32_t serial;            // Incremented on any controller change
 } FsChannel;
 
-// Output buses a voice mixes into
+// Output buses a voice mixes into: FS_BLOCK_SIZE floats each, added to
+// (not overwritten). reverb or chorus is NULL when that effect is off,
+// and the voice then skips that send.
 typedef struct {
     float *left;
     float *right;
@@ -137,17 +168,32 @@ typedef struct {
     uint32_t *loop_cycles;      // Cycles spent in the sample loop are added here
 } FsBuses;
 
+// Start playing a region. Evaluates the modulators against the channel
+// state, converts the region's generators into envelope stage lengths,
+// LFO rates, pitch and gains, and starts the sample stream. The voice is
+// silent until its first fs_voice_render.
+//
+// ch, channel  state and number of the MIDI channel playing the note
+// key, vel     the MIDI note (vel 1..127)
+// serial       allocation order, used by voice stealing
 void fs_voice_start(FsVoice *v, const FsFont *font, const FsRegion *region,
                     const FsChannel *ch, uint8_t channel, uint8_t key, uint8_t vel,
                     float sample_rate, uint32_t serial);
 
+// Note-off: both envelopes go to their release stage, and a loop-until-
+// release sample stops looping. No effect if already released.
 void fs_voice_release(FsVoice *v);
 
-// Fade out quickly (exclusive class, voice stealing, all sound off)
+// Fade out quickly (exclusive class, voice stealing, all sound off):
+// a release shortened to a few ms. Works on voices already releasing too.
 void fs_voice_kill(FsVoice *v, float sample_rate);
 
 // Render one block, adding into the buses. Returns false when the voice
 // has finished and can be freed.
+// ch must be the voice's own channel. Re-evaluates modulators first if the
+// channel's controllers changed since the last block. Finished means: the
+// volume envelope is done, a non-looping sample has ended, or the voice
+// has decayed below about -100 dB.
 bool fs_voice_render(FsVoice *v, const FsChannel *ch, const FsBuses *buses, float sample_rate);
 
 // Current amplitude, used to choose a voice to steal

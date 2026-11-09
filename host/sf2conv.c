@@ -1,6 +1,12 @@
 //
-// sf2conv - compile a SoundFont 2 (.sf2) file into a flat .fsf font image
+// sf2conv.c - compile a SoundFont 2 (.sf2) file into a flat .fsf font image
 // that pico-fsynth can read in place from flash.
+//
+// The synth on the Pico has no time or RAM to interpret a SoundFont's
+// preset/instrument hierarchy at note-on. This tool does that work once on
+// the PC and writes the result in the layout described in core/fs_font.h:
+// a header, a sorted preset table, a flat region table, a shared modulator
+// table and the sample data, all ready to be used straight from XIP flash.
 //
 // What it does:
 //  - Parses the RIFF structure (bounds checked; the input is untrusted).
@@ -14,8 +20,19 @@
 //  - Resolves sample address offset generators into absolute sample
 //    positions and validates/repairs loop points.
 //  - Copies only the sample data that is referenced.
+//  - Checks its own output with fs_font_init(), the reader the synth uses.
 //
-// Usage: sf2conv [-v] input.sf2 output.fsf
+// Generator values are left in SF2 units (see fs_font.h): modulators still
+// have to be applied at note-on, so nothing is converted to Hz or seconds.
+//
+// The whole program is a single pass that allocates freely and never frees
+// on error: any fatal problem calls die(), which exits. Recoverable
+// problems in the source font are counted by warn() and listed with -v.
+//
+// Usage: sf2conv [-v] [--vel-filter=spec|fluid|off] input.sf2 output.fsf
+//   -v            list each warning about the source font
+//   --vel-filter  how to treat the SF2 default "velocity to filter cutoff"
+//                 modulator (see fs_gen.c); default fluid
 //
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,9 +46,12 @@
 
 _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "sf2conv assumes a little-endian host");
 
-static bool verbose = false;
-static unsigned warning_count = 0;
+static bool verbose = false;        // -v: print each warning
+static unsigned warning_count = 0;  // Warnings seen, printed or not
 
+// Print a printf-style error message prefixed "sf2conv: error:" and exit
+// with status 1. Used for anything that makes the output impossible or
+// untrustworthy (I/O failure, malformed RIFF, out of memory).
 static void die(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -42,6 +62,9 @@ static void die(const char *fmt, ...) {
     exit(1);
 }
 
+// Count a recoverable problem with the source font (the offending item is
+// skipped or repaired by the caller). The message is printed to stderr
+// only with -v; the total is always reported at the end.
 static void warn(const char *fmt, ...) {
     ++warning_count;
     if (!verbose) return;
@@ -53,18 +76,25 @@ static void warn(const char *fmt, ...) {
     va_end(ap);
 }
 
+// calloc that never returns NULL: dies on failure. A count of 0 still
+// allocates (1 element) so the result can always be passed to free().
 static void *xcalloc(size_t n, size_t size) {
     void *p = calloc(n ? n : 1, size);
     if (!p) die("out of memory");
     return p;
 }
 
+// realloc that never returns NULL: dies on failure. Used to grow arrays one
+// element at a time (fonts are small enough that this does not matter).
 static void *xrealloc(void *p, size_t size) {
     p = realloc(p, size ? size : 1);
     if (!p) die("out of memory");
     return p;
 }
 
+// Little-endian reads from possibly unaligned file bytes: unsigned 16 bit,
+// signed 16 bit and unsigned 32 bit. memcpy avoids alignment traps; the
+// host is little-endian (asserted above) so no byte swapping is needed.
 static uint16_t rd16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
 static int16_t rds16(const uint8_t *p) { int16_t v; memcpy(&v, p, 2); return v; }
 static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
@@ -73,11 +103,15 @@ static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v;
 // RIFF parsing
 // ---------------------------------------------------------------------------
 
+// A RIFF chunk body: pointer into the loaded file and its size in bytes.
+// data is NULL if the chunk was not found.
 typedef struct {
     const uint8_t *data;
     uint32_t size;
 } Chunk;
 
+// The sub-chunks sf2conv uses, found anywhere inside the top level LISTs
+// (INFO, sdta, pdta). See SF2 2.04 sections 5-8 for their record formats.
 typedef struct {
     Chunk inam;
     Chunk smpl;
@@ -86,10 +120,15 @@ typedef struct {
     Chunk shdr;
 } Sf2Chunks;
 
+// True if the four bytes at p are the FourCC id (e.g. "LIST").
 static bool id_is(const uint8_t *p, const char *id) {
     return memcmp(p, id, 4) == 0;
 }
 
+// Walk the chunks inside one LIST body (p, size bytes, after the list type)
+// and record the ones sf2conv knows in c. Unknown chunks are skipped.
+// Chunks are padded to an even size as RIFF requires. Dies if a chunk
+// claims to extend past the end of the list.
 static void parse_list(const uint8_t *p, uint32_t size, Sf2Chunks *c) {
     uint32_t o = 0;
     while (o + 8 <= size) {
@@ -112,6 +151,10 @@ static void parse_list(const uint8_t *p, uint32_t size, Sf2Chunks *c) {
     }
 }
 
+// Check the RIFF "sfbk" header and parse every top level LIST in the file
+// into c (cleared first). A RIFF size larger than the file is truncated
+// with a warning; a chunk that overruns the file is fatal. Does not check
+// which chunks were found; main() does that.
 static void parse_riff(const uint8_t *file, size_t size, Sf2Chunks *c) {
     memset(c, 0, sizeof(*c));
     if (size < 12 || !id_is(file, "RIFF") || !id_is(file + 8, "sfbk")) die("not a SoundFont 2 file");
@@ -120,6 +163,9 @@ static void parse_riff(const uint8_t *file, size_t size, Sf2Chunks *c) {
         warn("RIFF size %u larger than file, truncating", riff_size);
         riff_size = (uint32_t)(size - 8);
     }
+    // The size includes the 4-byte "sfbk" form type; anything smaller would
+    // make the chunk area's length (riff_size - 4) wrap around
+    if (riff_size < 4) die("RIFF size %u too small", riff_size);
     const uint8_t *p = file + 12;
     const uint32_t end = riff_size - 4;
     uint32_t o = 0;
@@ -133,7 +179,10 @@ static void parse_riff(const uint8_t *file, size_t size, Sf2Chunks *c) {
     }
 }
 
-// Record counts, checked against the record sizes from the spec.
+// Number of fixed-size records (rec bytes each) in chunk c. Dies if the
+// chunk size is not a whole number of records or there are fewer than min
+// (most pdta lists end with a terminal record, so need at least 1 or 2).
+// name is used in the error message.
 static uint32_t record_count(const Chunk *c, uint32_t rec, const char *name, uint32_t min) {
     if (c->size % rec) die("%s chunk size %u is not a multiple of %u", name, c->size, rec);
     const uint32_t n = c->size / rec;
@@ -145,14 +194,19 @@ static uint32_t record_count(const Chunk *c, uint32_t rec, const char *name, uin
 // SoundFont model
 // ---------------------------------------------------------------------------
 
+// One shdr sample header. Positions are frame indices into the smpl chunk;
+// end and loop_end are one past the last frame, as in the spec.
 typedef struct {
     char name[21];
     uint32_t start, end, loop_start, loop_end, rate;
-    uint8_t original_pitch;
-    int8_t correction;
-    uint16_t type;
+    uint8_t original_pitch;     // MIDI key, 255 = unpitched
+    int8_t correction;          // Pitch correction in cents
+    uint16_t type;              // sfSampleLink; bit 15 = ROM sample
 } Sf2Sample;
 
+// A zone being resolved: generator values (32 bit, so preset + instrument
+// sums cannot overflow before saturation), which generators were set
+// explicitly, and the zone's modulator list (heap allocated, owned).
 typedef struct {
     int32_t gen[FS_GEN_COUNT];
     bool set[FS_GEN_COUNT];
@@ -160,6 +214,9 @@ typedef struct {
     uint32_t mod_count;
 } Zone;
 
+// Where to read the zones of either level of the hierarchy from: the bag,
+// gen and mod record arrays of the instrument (ibag/igen/imod) or preset
+// (pbag/pgen/pmod) lists. The same zone code handles both levels.
 typedef struct {
     const uint8_t *bag;  // bag records
     uint32_t bag_count;
@@ -170,11 +227,16 @@ typedef struct {
     uint16_t terminal;   // FS_GEN_INSTRUMENT or FS_GEN_SAMPLE_ID
 } ZoneSource;
 
+// SF2 2.04 section 9.5.1: two modulators are "identical" (the later one
+// replaces the earlier) when source, destination and amount source match.
+// Amount and transform do not count.
 static bool mod_identical(const FsModulator *a, const FsModulator *b) {
     return a->src == b->src && a->dst == b->dst && a->amt_src == b->amt_src;
 }
 
-// Add or replace (if identical) a modulator in a list.
+// Add a modulator to a heap list (*list, *count), or overwrite an identical
+// one in place (see mod_identical), keeping the list order otherwise.
+// Grows the list with xrealloc.
 static void mod_list_apply(FsModulator **list, uint32_t *count, const FsModulator *m) {
     for (uint32_t i = 0; i < *count; ++i) {
         if (mod_identical(&(*list)[i], m)) {
@@ -189,6 +251,13 @@ static void mod_list_apply(FsModulator **list, uint32_t *count, const FsModulato
 // Read the generators and modulators of one bag into a zone. Values
 // overwrite whatever is already in the zone (global zone, defaults).
 // Returns true if the zone ends with the terminal generator.
+//
+// bag is the bag index; its records run up to the next bag's start index.
+// Generators after the terminal one are ignored, as the spec requires.
+// keyRange/velRange are stored as lo | hi << 8; instrument and sampleID
+// as unsigned; everything else as signed 16 bit. Modulators that use
+// linking or have an invalid destination are dropped with a warning.
+// Dies on out-of-range bag indices. what names the zone in messages.
 static bool read_zone(const ZoneSource *zs, uint32_t bag, Zone *z, const char *what) {
     const uint32_t g0 = rd16(zs->bag + bag * 4), g1 = rd16(zs->bag + (bag + 1) * 4);
     const uint32_t m0 = rd16(zs->bag + bag * 4 + 2), m1 = rd16(zs->bag + (bag + 1) * 4 + 2);
@@ -233,6 +302,8 @@ static bool read_zone(const ZoneSource *zs, uint32_t bag, Zone *z, const char *w
     return terminal;
 }
 
+// Deep copy src into dst (dst's old modulator list is not freed; dst is
+// expected to be uninitialised or already freed).
 static void zone_copy(Zone *dst, const Zone *src) {
     memcpy(dst->gen, src->gen, sizeof(dst->gen));
     memcpy(dst->set, src->set, sizeof(dst->set));
@@ -241,6 +312,7 @@ static void zone_copy(Zone *dst, const Zone *src) {
     for (uint32_t i = 0; i < src->mod_count; ++i) mod_list_apply(&dst->mods, &dst->mod_count, &src->mods[i]);
 }
 
+// Free a zone's modulator list and leave it empty (generators untouched).
 static void zone_free(Zone *z) {
     free(z->mods);
     z->mods = NULL;
@@ -255,6 +327,13 @@ typedef struct {
 
 // Build the local zones of an instrument or preset with global zone values
 // (and the supplied base values) already applied.
+//
+// bag_first..bag_last-1 are the bags of one instrument or preset. Each
+// result zone starts as base, then the global zone (if any), then its own
+// values; later values overwrite earlier ones and modulators replace
+// identical ones. A first bag without the terminal generator (instrument
+// or sampleID) is the global zone; any other such bag is ignored with a
+// warning. The caller owns the result (free with zone_list_free).
 static ZoneList build_zones(const ZoneSource *zs, uint32_t bag_first, uint32_t bag_last,
                             const Zone *base, const char *what) {
     ZoneList list = { NULL, 0 };
@@ -298,6 +377,7 @@ static ZoneList build_zones(const ZoneSource *zs, uint32_t bag_first, uint32_t b
     return list;
 }
 
+// Free every zone in a list and the list itself, leaving it empty.
 static void zone_list_free(ZoneList *l) {
     for (uint32_t i = 0; i < l->count; ++i) zone_free(&l->zones[i]);
     free(l->zones);
@@ -305,7 +385,11 @@ static void zone_list_free(ZoneList *l) {
     l->count = 0;
 }
 
-// Generators that are only meaningful at instrument level
+// Generators that are only meaningful at instrument level (SF2 2.04
+// section 8.1.3). For these the preset zone's value is not added to the
+// instrument's: sample offsets, keynum/velocity overrides, sample modes,
+// exclusive class, root key and the structural ones. Key and velocity
+// ranges are intersected separately instead.
 static bool gen_instrument_only(int g) {
     switch (g) {
         case FS_GEN_START_ADDRS_OFFSET:
@@ -331,6 +415,7 @@ static bool gen_instrument_only(int g) {
     }
 }
 
+// Clamp a summed generator value to the int16 range stored in FsRegion.
 static int16_t sat16(int32_t v) {
     return v > 32767 ? 32767 : v < -32768 ? -32768 : (int16_t)v;
 }
@@ -339,19 +424,30 @@ static int16_t sat16(int32_t v) {
 // Output building
 // ---------------------------------------------------------------------------
 
+// A finished region before the sample data is laid out. Its sample
+// positions are relative to the start of its SF2 sample until relocation.
 typedef struct {
     FsRegion region;
     uint32_t sample_index;   // Index into the SF2 sample headers
 } PendingRegion;
 
+// A finished preset, waiting to be sorted. region_first/region_count index
+// the pending region list until the regions are compacted.
 typedef struct {
     FsPreset preset;
+    uint32_t order;          // Position in the SF2 preset list (sort tie-break)
 } PendingPreset;
 
+// The output modulator table, shared by all regions (see intern_mod_list)
 static FsModulator *out_mods = NULL;
 static uint32_t out_mod_count = 0;
 
 // Find an identical modulator list in the output table or append it.
+// Returns the index of the list's first modulator (0 for an empty list).
+// The search also finds a match that straddles two earlier lists, which is
+// fine: only the run of records matters. Dies if the table would exceed
+// the 16-bit index range of FsRegion.mod_first. O(n^2), fine for real
+// fonts.
 static uint16_t intern_mod_list(const FsModulator *mods, uint32_t count) {
     if (count == 0) return 0;
     for (uint32_t i = 0; i + count <= out_mod_count; ++i) {
@@ -365,21 +461,36 @@ static uint16_t intern_mod_list(const FsModulator *mods, uint32_t count) {
     return first;
 }
 
-static int compare_presets(const void *a, const void *b) {
-    const FsPreset *pa = &((const PendingPreset *)a)->preset;
-    const FsPreset *pb = &((const PendingPreset *)b)->preset;
-    const uint32_t ka = (uint32_t)pa->bank << 16 | pa->program;
-    const uint32_t kb = (uint32_t)pb->bank << 16 | pb->program;
-    return ka < kb ? -1 : ka > kb ? 1 : 0;
+// Sort key of a preset: bank, then program. This is the order
+// fs_font_find_preset's binary search relies on.
+static uint32_t preset_key(const PendingPreset *p) {
+    return (uint32_t)p->preset.bank << 16 | p->preset.program;
 }
 
+// qsort comparator for PendingPreset: by key, then by position in the SF2
+// file. qsort is not stable, so the position makes the order of duplicates
+// (and so which one is kept) well defined: the first in the file.
+static int compare_presets(const void *a, const void *b) {
+    const PendingPreset *pa = (const PendingPreset *)a;
+    const PendingPreset *pb = (const PendingPreset *)b;
+    const uint32_t ka = preset_key(pa), kb = preset_key(pb);
+    if (ka != kb) return ka < kb ? -1 : 1;
+    return pa->order < pb->order ? -1 : pa->order > pb->order ? 1 : 0;
+}
+
+// Copy a fixed-width SF2 name field of n bytes into dst (n + 1 bytes) and
+// NUL terminate it. The field may already contain a NUL; the name then
+// ends there.
 static void copy_name(char *dst, const uint8_t *src, size_t n) {
     memcpy(dst, src, n);
     dst[n] = 0;
-    // Strip trailing spaces and non-printables
+    // Replace non-printable characters with '?' so names are safe to print
+    // (spaces are kept)
     for (size_t i = 0; i < n; ++i) if (dst[i] && (dst[i] < 32 || dst[i] > 126)) dst[i] = '?';
 }
 
+// Load a whole file into a heap buffer; its size is returned in *size.
+// Dies if the file cannot be opened or read.
 static uint8_t *read_file(const char *path, size_t *size) {
     FILE *f = fopen(path, "rb");
     if (!f) die("cannot open %s", path);
@@ -394,6 +505,7 @@ static uint8_t *read_file(const char *path, size_t *size) {
     return buf;
 }
 
+// Print the command line help and exit with status 2.
 static void usage(void) {
     fprintf(stderr,
         "usage: sf2conv [-v] [--vel-filter=spec|fluid|off] input.sf2 output.fsf\n"
@@ -405,6 +517,10 @@ static void usage(void) {
     exit(2);
 }
 
+// Convert argv's input.sf2 into output.fsf. The stages are marked below:
+// options, RIFF parsing, sample headers, instruments, presets -> regions,
+// preset sort, sample layout, relocation, image assembly, self-check and
+// write. Returns 0 on success; errors exit via die() or usage().
 int main(int argc, char **argv) {
     // Default modulators, adjustable from the command line
     FsModulator default_mods[FS_DEFAULT_MODULATOR_COUNT];
@@ -415,6 +531,7 @@ int main(int argc, char **argv) {
     }
     const char *vel_filter_mode = "fluid";
 
+    // Options
     int argi = 1;
     while (argi < argc && argv[argi][0] == '-') {
         if (strcmp(argv[argi], "-v") == 0) verbose = true;
@@ -435,6 +552,8 @@ int main(int argc, char **argv) {
     const char *in_path = argv[argi];
     const char *out_path = argv[argi + 1];
 
+    // Load and parse the RIFF structure, then check that every chunk we
+    // need is present with a sane record count (record sizes from the spec)
     size_t file_size;
     uint8_t *file = read_file(in_path, &file_size);
 
@@ -498,6 +617,10 @@ int main(int argc, char **argv) {
         instruments[i] = build_zones(&inst_src, b0, b1, &inst_base, what);
     }
 
+    // Presets -> regions. For every preset zone, pair it with every zone of
+    // its instrument whose key and velocity ranges overlap; each pair
+    // becomes one FsRegion with the generators summed, sample positions
+    // resolved and its modulator list interned.
     PendingPreset *presets = NULL;
     uint32_t preset_count = 0;
     PendingRegion *regions = NULL;
@@ -519,6 +642,7 @@ int main(int argc, char **argv) {
         pp.preset.program = rd16(r + 20);
         pp.preset.bank = rd16(r + 22);
         pp.preset.region_first = region_count;
+        pp.order = p;
 
         if (pp.preset.program > 127 || pp.preset.bank > 128) {
             warn("preset '%s' has bank %u program %u, skipped", name, pp.preset.bank, pp.preset.program);
@@ -566,6 +690,8 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
+                // Generators: preset values are relative and add to the
+                // instrument's, except the instrument-only ones
                 PendingRegion pr;
                 memset(&pr, 0, sizeof(pr));
                 FsRegion *reg = &pr.region;
@@ -594,6 +720,9 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
+                // Loop points: clamp into [start, end]; a loop shorter than
+                // 2 frames cannot be played and is turned off. Non-looping
+                // regions get loop = whole sample so the reader's checks hold.
                 int loop_mode = ig[FS_GEN_SAMPLE_MODES] & 3;
                 if (loop_mode == FS_LOOP_UNUSED) loop_mode = FS_LOOP_NONE;
                 if (loop_mode != FS_LOOP_NONE) {
@@ -621,8 +750,18 @@ int main(int argc, char **argv) {
                 reg->loop_end = (uint32_t)(le - s->start);
                 reg->sample_rate = s->rate;
                 reg->loop_mode = (uint8_t)loop_mode;
-                reg->exclusive_class = (uint8_t)(ig[FS_GEN_EXCLUSIVE_CLASS] & 0x7f);
+                // Exclusive class: the spec allows 0..127 (0 = none), which
+                // is what the synth's class set holds. Others are ignored
+                // rather than wrapped onto a real class.
+                const int32_t xc = ig[FS_GEN_EXCLUSIVE_CLASS];
+                if (xc < 0 || xc > 127) {
+                    warn("preset '%s': exclusive class %d out of range, ignored", name, xc);
+                    reg->exclusive_class = 0;
+                } else {
+                    reg->exclusive_class = (uint8_t)xc;
+                }
 
+                // Root key: overridingRootKey if set, else the sample's pitch
                 const int32_t ork = ig[FS_GEN_OVERRIDING_ROOT_KEY];
                 if (ork >= 0 && ork <= 127) reg->root_key = (uint8_t)ork;
                 else if (s->original_pitch <= 127) reg->root_key = s->original_pitch;
@@ -659,17 +798,46 @@ int main(int argc, char **argv) {
         presets[preset_count++] = pp;
     }
 
-    // Sort presets by (bank, program) and drop duplicates
+    // Sort presets by (bank, program) and drop duplicates, keeping the one
+    // that comes first in the file
     qsort(presets, preset_count, sizeof(PendingPreset), compare_presets);
     uint32_t unique = 0;
     for (uint32_t i = 0; i < preset_count; ++i) {
-        if (unique > 0 && compare_presets(&presets[unique - 1], &presets[i]) == 0) {
+        if (unique > 0 && preset_key(&presets[unique - 1]) == preset_key(&presets[i])) {
             warn("duplicate preset bank %u program %u, keeping first", presets[i].preset.bank, presets[i].preset.program);
             continue;
         }
         presets[unique++] = presets[i];
     }
     preset_count = unique;
+
+    // Keep only the regions of the remaining presets, stored in preset
+    // order, and rebuild the sample-used flags and the modulator table from
+    // them, so dropped duplicates leave no dead data in the output.
+    {
+        PendingRegion *kept = xcalloc(region_count, sizeof(PendingRegion));
+        uint32_t kept_count = 0;
+        for (uint32_t i = 0; i < preset_count; ++i) {
+            FsPreset *pr = &presets[i].preset;
+            if (pr->region_count) memcpy(&kept[kept_count], &regions[pr->region_first], pr->region_count * sizeof(PendingRegion));
+            pr->region_first = kept_count;
+            kept_count += pr->region_count;
+        }
+        free(regions);
+        regions = kept;
+        region_count = kept_count;
+
+        memset(sample_used, 0, sample_count * sizeof(bool));
+        FsModulator *old_mods = out_mods;
+        out_mods = NULL;
+        out_mod_count = 0;
+        for (uint32_t i = 0; i < region_count; ++i) {
+            FsRegion *reg = &regions[i].region;
+            sample_used[regions[i].sample_index] = true;
+            reg->mod_first = reg->mod_count ? intern_mod_list(old_mods + reg->mod_first, reg->mod_count) : 0;
+        }
+        free(old_mods);
+    }
 
     // Lay out the referenced sample data. Each sample is padded to an even
     // number of frames so every sample starts 4-byte aligned.
@@ -683,7 +851,8 @@ int main(int argc, char **argv) {
         ++used_samples;
     }
 
-    // Relocate region positions
+    // Relocate region positions from "relative to its SF2 sample" to
+    // absolute frame indices in the output sample data
     for (uint32_t i = 0; i < region_count; ++i) {
         FsRegion *reg = &regions[i].region;
         const uint32_t base = sample_base[regions[i].sample_index];
@@ -693,7 +862,9 @@ int main(int argc, char **argv) {
         reg->loop_end += base;
     }
 
-    // Assemble the output image
+    // Assemble the output image: header, presets, regions, modulators, then
+    // the sample data starting on a flash sector boundary. CRCs are
+    // computed last, over the bytes as written.
     FsFontHeader h;
     memset(&h, 0, sizeof(h));
     h.magic = FS_FONT_MAGIC;
@@ -737,6 +908,7 @@ int main(int argc, char **argv) {
     const FsFontResult res = fs_font_init(&font, out, h.total_size, true, true);
     if (res != FS_FONT_OK) die("internal error, output failed validation: %s", fs_font_result_str(res));
 
+    // Write the image and print a summary
     FILE *f = fopen(out_path, "wb");
     if (!f) die("cannot create %s", out_path);
     if (fwrite(out, 1, h.total_size, f) != h.total_size) die("cannot write %s", out_path);

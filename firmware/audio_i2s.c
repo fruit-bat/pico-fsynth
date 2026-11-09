@@ -1,5 +1,15 @@
 //
-// I2S output via PIO and DMA (e.g. MAX98357A, PCM5102A).
+// audio_i2s.c - audio output as I2S via PIO and DMA (FS_AUDIO_OUT=I2S).
+//
+// Drives an external I2S DAC such as a MAX98357A, PCM5102A or the PCM5101A
+// on a Waveshare Pico-Audio. No MCLK is generated, so the DAC must make its
+// own (PCM510x and MAX98357A do). Pins: data on FS_I2S_DATA_PIN, BCLK on
+// FS_I2S_CLOCK_PIN_BASE and LRCLK on the next GPIO (set in CMakeLists.txt).
+//
+// One DMA channel copies one 32-bit word (a whole L+R frame) per PIO TX
+// FIFO request; the PIO program (audio_i2s.pio) shifts it out. The DMA
+// completion interrupt chains the next buffer from the AudioRing. See
+// audio_out.h for the interface contract.
 //
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
@@ -15,13 +25,19 @@ static AudioRing ring;
 static PIO pio;
 static uint sm;
 static int dma_chan;
-static float out_rate;
+static float out_rate;      // Actual frame rate in Hz
 
+// DMA_IRQ_1 handler: the transfer of one buffer has finished; restart the
+// channel on the next buffer (or silence). Runs from RAM, on the core that
+// called audio_out_init(). Restarting immediately keeps the gap between
+// buffers to a few cycles, well within the PIO FIFO's slack.
 static void __not_in_flash_func(dma_handler)(void) {
     dma_irqn_acknowledge_channel(1, (uint)dma_chan);
     dma_channel_set_read_addr((uint)dma_chan, audio_ring_next(&ring), true);
 }
 
+// See audio_out.h. Claims a free PIO state machine and DMA channel, and
+// shares DMA_IRQ_1 with any other user at the highest order priority.
 bool audio_out_init(uint32_t sample_rate) {
     uint offset;
     if (!pio_claim_free_sm_and_add_program(&audio_i2s_program, &pio, &sm, &offset)) return false;
@@ -32,6 +48,7 @@ bool audio_out_init(uint32_t sample_rate) {
     pio_sm_set_clkdiv(pio, sm, div);
     out_rate = (float)clock_get_hz(clk_sys) / (div * 64.0f);
 
+    // Start on the silence buffer (static, so already zero)
     ring.playing_silence = true;
 
     dma_chan = dma_claim_unused_channel(true);
@@ -51,18 +68,23 @@ bool audio_out_init(uint32_t sample_rate) {
     return true;
 }
 
+// See audio_out.h. The int16 L,R pair is already in the word layout the
+// PIO program expects, so the buffer is used as is.
 int16_t *audio_out_acquire(void) {
     return (int16_t *)audio_ring_acquire(&ring);
 }
 
+// See audio_out.h.
 void audio_out_submit(void) {
     audio_ring_submit(&ring);
 }
 
+// See audio_out.h.
 uint32_t audio_out_underruns(void) {
     return ring.underruns;
 }
 
+// See audio_out.h.
 float audio_out_rate(void) {
     return out_rate;
 }

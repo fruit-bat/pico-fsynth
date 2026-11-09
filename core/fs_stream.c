@@ -1,6 +1,15 @@
+//
+// fs_stream.c - copies a voice's sample from the font into its ring
+// buffer, unrolling loops. See fs_stream.h for the model.
+//
+// Both functions run on the render path (note-on and every block), so
+// they are placed in RAM on the Pico.
+//
 #include <string.h>
 #include "fs_stream.h"
 
+// See fs_stream.h. Writes virtual frame 0 (a zero frame) and its guard
+// copy, so the first cubic interpolation reads a 0 before the sample.
 void FS_RAM_FUNC(fs_stream_start)(FsStream *s, const int16_t *data, uint32_t start, uint32_t end,
                                   uint32_t loop_start, uint32_t loop_end, bool looping) {
     s->data = data;
@@ -16,6 +25,10 @@ void FS_RAM_FUNC(fs_stream_start)(FsStream *s, const int16_t *data, uint32_t sta
     s->filled = 1;
 }
 
+// See fs_stream.h. Copies in chunks that stop at whichever comes first:
+// the target, the end of the ring (wrap), or the loop end / sample end in
+// the font. At the loop end it jumps back to loop_start; at the sample
+// end it records end_vpos and pads with zeros from then on.
 void FS_RAM_FUNC(fs_stream_fill)(FsStream *s, uint32_t playhead, uint32_t frames) {
     if (frames > FS_STREAM_FRAMES) frames = FS_STREAM_FRAMES;
     const uint32_t target = playhead - 1 + frames;

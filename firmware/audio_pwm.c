@@ -1,8 +1,18 @@
 //
-// PWM output: one PWM slice, left on channel A and right on channel B.
-// The PWM period is one sample, so the carrier is at the sample rate
-// (about 11.7 bits at 150 MHz / 44.1 kHz). Needs an RC low pass filter
-// on each pin.
+// audio_pwm.c - audio output as PWM (FS_AUDIO_OUT=PWM).
+//
+// One PWM slice: left on channel A (FS_PWM_PIN_L), right on channel B
+// (FS_PWM_PIN_R); both pins must belong to the same slice. The PWM period
+// is one sample, so the carrier is at the sample rate and the resolution
+// is log2(sys clock / sample rate): about 11.7 bits at 150 MHz / 44.1 kHz,
+// 12.5 bits at 250 MHz. Each pin needs an RC low pass filter, and the
+// carrier is audible-adjacent, so this is a fallback for boards without a
+// DAC rather than a hi-fi output.
+//
+// A DMA channel writes one 32-bit word per PWM wrap to the slice's CC
+// register (A level in the low half, B in the high half). The samples are
+// converted from signed int16 to compare levels in audio_out_submit(), so
+// the DMA can copy them unchanged. See audio_out.h for the interface.
 //
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
@@ -16,15 +26,21 @@
 static AudioRing ring;
 static int dma_chan;
 static uint slice;
-static uint32_t top;
-static float out_rate;
+static uint32_t top;        // PWM wrap value: levels are 0..top
+static float out_rate;      // Actual sample rate in Hz: sys clock / (top + 1)
 static uint32_t *current;   // Buffer handed out by acquire
 
+// DMA_IRQ_1 handler: chain the next buffer (or silence). Runs from RAM, on
+// the core that called audio_out_init().
 static void __not_in_flash_func(dma_handler)(void) {
     dma_irqn_acknowledge_channel(1, (uint)dma_chan);
     dma_channel_set_read_addr((uint)dma_chan, audio_ring_next(&ring), true);
 }
 
+// See audio_out.h. Fails if the two pins are not channels A and B of one
+// slice, or if the sample rate is too low for a 16-bit wrap value. The
+// silence buffer holds the mid level (not zero), so an underrun gives
+// silence rather than a full-scale step.
 bool audio_out_init(uint32_t sample_rate) {
     slice = pwm_gpio_to_slice_num(FS_PWM_PIN_L);
     if (pwm_gpio_to_slice_num(FS_PWM_PIN_R) != slice ||
@@ -68,11 +84,15 @@ bool audio_out_init(uint32_t sample_rate) {
     return true;
 }
 
+// See audio_out.h. Remembers the buffer so submit can convert it.
 int16_t *audio_out_acquire(void) {
     current = audio_ring_acquire(&ring);
     return (int16_t *)current;
 }
 
+// See audio_out.h. Converts the buffer in place from signed int16 pairs to
+// PWM compare levels (offset to unsigned, scaled to 0..top-1), then queues
+// it. In RAM because it runs once per buffer on the render path.
 void __not_in_flash_func(audio_out_submit)(void) {
     // Convert signed 16-bit pairs to PWM compare values in place
     uint32_t *w = current;
@@ -85,10 +105,12 @@ void __not_in_flash_func(audio_out_submit)(void) {
     audio_ring_submit(&ring);
 }
 
+// See audio_out.h.
 uint32_t audio_out_underruns(void) {
     return ring.underruns;
 }
 
+// See audio_out.h.
 float audio_out_rate(void) {
     return out_rate;
 }

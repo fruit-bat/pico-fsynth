@@ -6,8 +6,13 @@
 # Usage: host/settings.sh save|erase [amidi-port]
 #   port  e.g. hw:2,0,0 (default: the first port named pico-fsynth)
 #
-# Sends SysEx F0 7D 46 53 01 F7 (save) or F0 7D 46 53 02 F7 (erase). Audio
-# drops out for a moment while the flash is written.
+# Sends SysEx F0 7D 46 53 01 F7 (save) or F0 7D 46 53 02 F7 (erase):
+# 7D = manufacturer ID reserved for non-commercial use, 46 53 = "FS". Audio
+# drops out for a moment while the flash is written. The result is printed
+# on the synth's USB serial console, not here. Saving is refused if the
+# font reaches the last flash sector, where settings are kept.
+#
+# Requires amidi (alsa-utils) and the synth connected over USB.
 #
 # Example: host/master_eq.sh 6 -6 && host/master_volume.sh 80 && host/settings.sh save
 set -e

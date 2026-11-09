@@ -7,12 +7,15 @@ SoundFont 2 MIDI synthesizer for the RP2350 (target: Waveshare RP2350-Plus, 16 M
 - `core/` portable synth: font reader, voices, effects, MIDI file player
 - `firmware/` RP2350 specific: audio output (I2S / PWM), MIDI input (UART / USB), main
 - `host/` PC tools: font converter, font inspector, MIDI to WAV renderer, test scripts
+- `tests/` automated tests of the core, the firmware's MIDI parsers and the host tools
 
 ## Fonts
 
 SoundFonts are compiled on the PC into a flat `.fsf` image that the synth reads
 in place from flash. The converter flattens presets/instruments into resolved
 regions, merges default modulators and resolves sample positions and loops.
+
+See https://github.com/craffel/pretty-midi/
 
 ```sh
 cmake -S host -B build-host
@@ -36,6 +39,32 @@ fluidsynth -n -i -r 44100 -F ref.wav TimGM6mb.sf2 song.mid          # reference 
 python3 host/compare_wav.py out.wav ref.wav                          # level / envelope / brightness
 host/render_compare.sh [more.mid ...]   # every test file -> build-host/test/NAME.fsynth.wav + NAME.fluid.wav
 ```
+
+## Tests
+
+The host build also builds the test suite in `tests/` (plain C, run by CTest):
+
+```sh
+cmake -S host -B build-host && cmake --build build-host
+ctest --test-dir build-host --output-on-failure
+
+# The same under AddressSanitizer + UndefinedBehaviorSanitizer
+cmake -S host -B build-host-asan -DFS_SANITIZE=ON && cmake --build build-host-asan
+ctest --test-dir build-host-asan --output-on-failure
+```
+
+| Test | Covers |
+|------|--------|
+| `math` | unit conversions, fast exp2/sine, modulator curves, CRC-32 |
+| `smf` | MIDI file player: timing, tempo, running status, SysEx, truncated files |
+| `stream` | sample streamer: loop unrolling, end of sample, loop until release |
+| `synth` | font reader checks, pitch, note on/off, sustain, layers, exclusive class, voice stealing, split render |
+| `midi_parse` | firmware UART / USB MIDI parsers and SysEx recognition (`firmware/midi_parse.c`) |
+| `tools` | runs `sf2conv` and `fsrender` on generated SoundFonts and MIDI files |
+
+To add a test, add a `TEST(name)` function to the relevant `tests/test_*.c`
+and `RUN(name)` it from `main`; a new file also needs a line in
+`tests/CMakeLists.txt`.
 
 ## Firmware
 

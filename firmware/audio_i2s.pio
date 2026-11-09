@@ -1,34 +1,50 @@
 ;
-; I2S transmitter, 16-bit stereo, standard (Philips) format: data changes on
-; the falling edge of BCLK and the MSB follows LRCLK by one bit.
+; audio_i2s.pio - I2S transmitter for audio_i2s.c, 16-bit stereo.
+;
+; Standard (Philips) I2S format: data changes on the falling edge of BCLK
+; and the MSB of each channel follows the LRCLK edge by one bit. LRCLK low
+; is the left channel, high the right.
 ;
 ; Side-set pins: BCLK = base, LRCLK = base + 1. Data on the OUT pin.
-; Each 32-bit FIFO word is one frame. The upper 16 bits go out while LRCLK
-; is high (right channel), so a little-endian int16 L,R pair in memory is
-; already in the right order.
-; Two PIO cycles per bit, so the state machine runs at 64 x sample rate.
+; Each 32-bit FIFO word is one frame, shifted out MSB first. The upper 16
+; bits go out while LRCLK is high (right channel), so a little-endian int16
+; L,R pair in memory (L in the low half) is already in the right order.
+; Two PIO cycles per bit, so the state machine runs at 64 x sample rate
+; (BCLK = 32 x sample rate).
+;
+; Each half frame is 16 bits: the loop sends 15 (x counts 14..0) and the
+; instruction after it sends the 16th while already switching LRCLK, which
+; gives the one-bit delay. The program starts at entry_point, which raises
+; LRCLK and loads x, so each word is sent as its right half (LRCLK high)
+; followed by its left half (LRCLK low). The DAC pairs them by LRCLK, so
+; the channels come out right; only the order in time is R then L.
 ;
 .program audio_i2s
 .side_set 2
                         ;        /--- LRCLK
                         ;        |/-- BCLK
-bitloop1:               ;        ||
+bitloop1:               ;        ||          right channel, bits 15..1
     out pins, 1         side 0b10
     jmp x-- bitloop1    side 0b11
-    out pins, 1         side 0b00
+    out pins, 1         side 0b00           ; last right bit, LRCLK -> left
     set x, 14           side 0b01
 
-bitloop0:
+bitloop0:               ;                    left channel, bits 15..1
     out pins, 1         side 0b00
     jmp x-- bitloop0    side 0b01
-    out pins, 1         side 0b10
+    out pins, 1         side 0b10           ; last left bit, LRCLK -> right
 public entry_point:
-    set x, 14           side 0b11
+    set x, 14           side 0b11           ; then wraps to bitloop1
 
 % c-sdk {
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 
+// Configure state machine `sm` (program loaded at `offset`) for I2S: data on
+// data_pin, BCLK on clock_pin_base and LRCLK on clock_pin_base + 1. Sets the
+// pins to outputs driven low, joins the FIFOs into an 8-word TX FIFO and
+// jumps to entry_point. Does not set the clock divider or enable the state
+// machine; the caller does both.
 static inline void audio_i2s_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clock_pin_base) {
     pio_sm_config c = audio_i2s_program_get_default_config(offset);
     sm_config_set_out_pins(&c, data_pin, 1);

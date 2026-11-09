@@ -1,5 +1,15 @@
+//
+// fs_gen.c - SF2 generator defaults and default modulators.
+//
+// Only sf2conv uses these tables directly: it starts every instrument
+// zone from them before applying the font's own values. They are in the
+// core so that the converter and the synth agree on one definition.
+//
 #include "fs_gen.h"
 
+// Default value of every generator (SF2 2.04 section 8.1.3). Generators
+// not listed default to 0. -12000 timecents means "instant" and -1 means
+// "not set" for keynum, velocity and overridingRootKey.
 const int16_t fs_gen_default[FS_GEN_COUNT] = {
     [FS_GEN_INITIAL_FILTER_FC] = 13500,
     [FS_GEN_DELAY_MOD_LFO] = -12000,
@@ -22,6 +32,8 @@ const int16_t fs_gen_default[FS_GEN_COUNT] = {
     [FS_GEN_OVERRIDING_ROOT_KEY] = -1,
 };
 
+// Build a modulator source word (see fs_gen.h): controller index, CC flag,
+// negative, bipolar, curve type.
 #define SRC(index, cc, neg, bip, type) \
     ((index) | ((cc) ? FS_MOD_SRC_CC : 0) | ((neg) ? FS_MOD_SRC_NEGATIVE : 0) | \
      ((bip) ? FS_MOD_SRC_BIPOLAR : 0) | ((type) << FS_MOD_SRC_TYPE_SHIFT))

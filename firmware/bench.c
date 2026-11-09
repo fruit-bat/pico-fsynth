@@ -1,10 +1,20 @@
 //
-// Inner loop micro benchmarks (built with -DFS_BENCH=ON).
+// bench.c - inner loop micro benchmarks (built with cmake -DFS_BENCH=ON).
 //
 // Each kernel is a variant of the voice sample loop in core/fs_voice.c,
 // timed with the DWT cycle counter over many 32 frame blocks. Comparing
 // them shows where the cycles of the real loop go. Run at boot, before the
-// audio starts; results are printed with the status lines.
+// audio starts; results are printed with the status lines (every 30 s).
+//
+// There are three groups of results:
+//  - single kernels on core 0 (cycles per sample for one voice),
+//  - the full kernel on both cores at once, to see the cost of sharing
+//    SRAM and the bus,
+//  - the real synth playing test chords on one core with interrupts off,
+//    using the synth's own cycle counters (cycles per voice-sample).
+//
+// The kernels are compiled with the same options as the synth core (see
+// CMakeLists.txt), so FS_FP_CONTRACT affects them in the same way.
 //
 #include <stdio.h>
 #include <string.h>
@@ -18,15 +28,20 @@
 #include "bench.h"
 
 // Real synth on one core, no interrupts from the audio: loop cycles per
-// voice-sample from the synth's own counters
+// voice-sample from the synth's own counters. `loop` is the sample loop
+// only, `total` everything in the render parts (voice setup, stream
+// refills, effects); `voices` is the voice count measured.
 typedef struct { const char *name; float loop, total; uint32_t voices; } SynthResult;
 static SynthResult synth_result[4];
 
 #define B FS_BLOCK_SIZE
-#define RING 1024
+#define RING 1024           // Frames in the test ring (as FS_STREAM_FRAMES)
 #define MASK (RING - 1)
-#define BLOCKS 1000
+#define BLOCKS 1000         // Blocks timed per kernel
 
+// Working state of one kernel: a sample ring (int16 as in the synth, and a
+// float copy for k_float_ring), output buses and filter / playhead state.
+// The 4 extra frames play the part of the synth's ring guard frames.
 typedef struct {
     int16_t ring16[RING + 4];
     float ringf[RING + 4];
@@ -38,11 +53,18 @@ typedef struct {
 // One set per core so the dual core test does not share data
 static BenchData data[2];
 
+// Fixed low pass filter coefficients and playback increment used by every
+// kernel (values typical of a real voice; the exact numbers do not matter)
 static const float b0 = 0.0675f, b1 = 0.135f, b2 = 0.0675f, a1 = -1.143f, a2 = 0.413f;
 static const uint32_t inc_int = 1, inc_frac = 0x0327a5c0; // 1.0123
 
 typedef void (*Kernel)(BenchData *d);
 
+// Building blocks for the kernels, pasted together to make each variant.
+// LOOP_BEGIN/LOOP_END: load state, loop over one block with the 32.32
+// fixed point playhead step, store state. CUBIC: Catmull-Rom interpolation
+// into `s`. TAPS16: fetch the 4 int16 frames around the playhead. FILTER:
+// the biquad. PAN_MIX: amplitude ramp and mix into the two buses.
 #define LOOP_BEGIN                                              \
     uint32_t pos = d->pos, frac = d->frac;                      \
     float z1 = d->z1, z2 = d->z2, amp = 0.5f;                   \
@@ -153,10 +175,12 @@ static const struct { const char *name; Kernel k; } kernels[] = {
 };
 #define KERNELS (sizeof(kernels) / sizeof(kernels[0]))
 
-static float result[KERNELS];
-static float result_dual[2];
-static uint32_t checksum;
+static float result[KERNELS];       // Cycles per sample, per kernel
+static float result_dual[2];        // Full kernel on core 0 / core 1 at once
+static uint32_t checksum;           // Printed so the compiler keeps the outputs
 
+// Time BLOCKS calls of kernel k on d (after one warm-up call, which also
+// loads the caches) and return the total CPU cycles. RAM resident.
 static uint32_t __not_in_flash_func(run)(Kernel k, BenchData *d) {
     k(d); // Warm up
     const uint32_t t0 = m33_hw->dwt_cyccnt;
@@ -164,6 +188,7 @@ static uint32_t __not_in_flash_func(run)(Kernel k, BenchData *d) {
     return m33_hw->dwt_cyccnt - t0;
 }
 
+// Fill the rings with a two-tone test signal and clear the state.
 static void init_data(BenchData *d) {
     for (int i = 0; i < RING + 4; ++i) {
         d->ring16[i] = (int16_t)(12000.0f * sinf(0.05f * (float)i) + 3000.0f * sinf(0.31f * (float)i));
@@ -176,12 +201,17 @@ static void init_data(BenchData *d) {
     d->frac = 0;
 }
 
+// Enable the DWT cycle counter on the calling core.
 static void enable_counter(void) {
     m33_hw->demcr |= M33_DEMCR_TRCENA_BITS;
     m33_hw->dwt_ctrl |= M33_DWT_CTRL_CYCCNTENA_BITS;
 }
 
 static volatile uint32_t core1_cycles;
+
+// Core 1 entry for the dual core test: wait for core 0's start signal,
+// time the full kernel on its own data, report through the FIFO, then idle
+// until core 0 resets it.
 static void core1_bench(void) {
     enable_counter();
     multicore_fifo_pop_blocking(); // Start together with core 0
@@ -190,6 +220,11 @@ static void core1_bench(void) {
     for (;;) tight_loop_contents();
 }
 
+// Measure the real synth on the calling core. Sets program progs[c] on
+// channels 0..nprogs-1 and plays every key in `keys` on each (odd channels
+// an octave up), renders 20 blocks to get past the attacks, then times 300
+// blocks with interrupts off. Effects on or off as given. Leaves the synth
+// silent and reset, with effects on. Returns the per voice-sample cycles.
 static SynthResult bench_synth(FsSynth *s, const char *name, const uint8_t *progs, int nprogs,
                                const uint8_t *keys, int nkeys, bool effects) {
     fs_synth_reset(s);
@@ -228,6 +263,7 @@ static SynthResult bench_synth(FsSynth *s, const char *name, const uint8_t *prog
     return res;
 }
 
+// See bench.h.
 void bench_run(FsSynth *synth) {
     enable_counter();
     init_data(&data[0]);
@@ -257,6 +293,7 @@ void bench_run(FsSynth *synth) {
     synth_result[3] = bench_synth(synth, "poly chord, one note per program", poly_progs, 6, c4, 1, true);
 }
 
+// See bench.h.
 void bench_print(void) {
     printf("bench: cycles per sample (one voice), %lu blocks each\n", (unsigned long)BLOCKS);
     for (unsigned i = 0; i < KERNELS; ++i) printf("  %-44s %6.1f\n", kernels[i].name, (double)result[i]);

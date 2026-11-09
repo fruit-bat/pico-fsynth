@@ -1,3 +1,22 @@
+//
+// fs_effects.c - reverb, chorus and master EQ. See fs_effects.h.
+//
+// Reverb: Freeverb (Jezar at Dreampoint, public domain). 8 parallel
+// low-pass-feedback comb filters make the dense decaying tail; 4 series
+// allpass filters diffuse it. Here the combs are mono (the send bus is
+// mono) and only the allpass chains are split into left and right, with
+// the right ones a little longer (FS_REVERB_STEREO_SPREAD) to decorrelate
+// the two sides.
+//
+// Chorus: a single delay line read by FS_CHORUS_TAPS taps whose delays are
+// swept by sine LFOs at evenly spread phases. Linear interpolation between
+// samples.
+//
+// Master EQ: two RBJ cookbook shelving biquads per channel.
+//
+// The per-sample loops are in RAM on the Pico (FS_RAM_FUNC); setup code
+// stays in flash.
+//
 #include <string.h>
 #include <math.h>
 #include "fs_effects.h"
@@ -7,12 +26,16 @@
 // Reverb
 // ---------------------------------------------------------------------------
 
+// Freeverb's delay lengths in samples at 44.1 kHz (mutually prime-ish, so
+// the echoes do not line up)
 static const uint16_t comb_len[FS_REVERB_COMBS] = { 1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617 };
 static const uint16_t ap_len[FS_REVERB_ALLPASSES] = { 556, 441, 341, 225 };
 
 // Keeps the recirculating filters out of denormal territory
 #define FS_ANTI_DENORMAL 1e-20f
 
+// Set up a delay line of len samples at mem (already zeroed). Returns the
+// memory just past it, for the next line.
 static float *delay_init(FsDelayLine *d, float *mem, uint32_t len) {
     d->buf = mem;
     d->len = len;
@@ -21,6 +44,7 @@ static float *delay_init(FsDelayLine *d, float *mem, uint32_t len) {
     return mem + len;
 }
 
+// See fs_effects.h. Lengths are scaled from 44.1 kHz to sample_rate.
 void fs_reverb_init(FsReverb *r, float sample_rate) {
     memset(r->comb_mem, 0, sizeof(r->comb_mem));
     memset(r->ap_mem, 0, sizeof(r->ap_mem));
@@ -36,9 +60,12 @@ void fs_reverb_init(FsReverb *r, float sample_rate) {
     }
     // Defaults chosen to be close to FluidSynth: RT60 about 3.5 s, wet about
     // -11 dB below dry at full send, similar brightness
-    fs_reverb_set(r, 0.88f, 0.2f, 1.0f, 0.2f);
+    fs_reverb_set(r, FS_REVERB_DEFAULT_ROOM, FS_REVERB_DEFAULT_DAMP, FS_REVERB_DEFAULT_WIDTH, FS_REVERB_DEFAULT_LEVEL);
 }
 
+// See fs_effects.h. The scale factors are Freeverb's: room maps to comb
+// feedback 0.7..0.98, damp to 0..0.4, and the input is scaled down so the
+// 8 summed combs do not overload.
 void fs_reverb_set(FsReverb *r, float room, float damp, float width, float level) {
     r->feedback = room * 0.28f + 0.7f;
     r->damp = damp * 0.4f;
@@ -60,6 +87,8 @@ static inline uint32_t run_len(FsDelayLine *const d[4], uint32_t n) {
     return n;
 }
 
+// Move 4 delay lines on by run samples. run comes from run_len, so a line
+// can only reach its end exactly, and then wraps to 0.
 static inline void advance(FsDelayLine *const d[4], uint32_t run) {
     for (int k = 0; k < 4; ++k) {
         d[k]->pos += run;
@@ -68,6 +97,8 @@ static inline void advance(FsDelayLine *const d[4], uint32_t run) {
 }
 
 // 4 damped combs: acc[i] += comb outputs, input x[i]
+// Each comb: out = delayed sample; store = low pass of out (damp1 = old
+// share, damp2 = new share); write back in + store * fb.
 static void FS_RAM_FUNC(comb4)(FsDelayLine *const d[4], const float *x, float *acc, uint32_t n, float fb, float damp1, float damp2) {
     float st0 = d[0]->store, st1 = d[1]->store, st2 = d[2]->store, st3 = d[3]->store;
     uint32_t i = 0;
@@ -94,7 +125,7 @@ static void FS_RAM_FUNC(comb4)(FsDelayLine *const d[4], const float *x, float *a
     d[0]->store = st0; d[1]->store = st1; d[2]->store = st2; d[3]->store = st3;
 }
 
-// 4 allpasses in series, in place
+// 4 allpasses in series, in place (Freeverb's allpass with gain 0.5)
 static void FS_RAM_FUNC(allpass4)(FsDelayLine *const d[4], float *x, uint32_t n) {
     uint32_t i = 0;
     while (i < n) {
@@ -116,6 +147,10 @@ static void FS_RAM_FUNC(allpass4)(FsDelayLine *const d[4], float *x, uint32_t n)
 
 _Static_assert(FS_REVERB_COMBS == 8 && FS_REVERB_ALLPASSES == 4, "reverb is processed in groups of 4");
 
+// See fs_effects.h. Input -> 8 combs summed -> copied to two allpass
+// chains (left, right) -> mixed into the outputs with the width gains.
+// A tiny constant is added to the input to keep the filters out of
+// denormal numbers, which are very slow, as the tail decays.
 void FS_RAM_FUNC(fs_reverb_process)(FsReverb *r, const float *in, float *left, float *right, uint32_t n) {
     float x[FS_BLOCK_SIZE], l[FS_BLOCK_SIZE], rr[FS_BLOCK_SIZE];
     if (n > FS_BLOCK_SIZE) n = FS_BLOCK_SIZE;
@@ -143,15 +178,18 @@ void FS_RAM_FUNC(fs_reverb_process)(FsReverb *r, const float *in, float *left, f
 // Chorus
 // ---------------------------------------------------------------------------
 
+// See fs_effects.h.
 void fs_chorus_init(FsChorus *c, float sample_rate) {
     memset(c->buf, 0, sizeof(c->buf));
     c->pos = 0;
     c->phase = 0.0f;
     // Defaults chosen to give about the same wet level as FluidSynth
-    fs_chorus_set(c, sample_rate, 0.3f, 12.0f, 4.0f, 0.9f);
+    fs_chorus_set(c, sample_rate, FS_CHORUS_DEFAULT_RATE, FS_CHORUS_DEFAULT_BASE, FS_CHORUS_DEFAULT_DEPTH, FS_CHORUS_DEFAULT_LEVEL);
     for (int t = 0; t < FS_CHORUS_TAPS; ++t) c->delay[t] = c->base;
 }
 
+// See fs_effects.h. The LFO step is per block, because the tap delays are
+// only recomputed once per block.
 void fs_chorus_set(FsChorus *c, float sample_rate, float rate_hz, float base_ms, float depth_ms, float level) {
     c->phase_step = rate_hz * (float)FS_BLOCK_SIZE / sample_rate;
     c->base = base_ms * 0.001f * sample_rate;
@@ -164,6 +202,9 @@ void fs_chorus_set(FsChorus *c, float sample_rate, float rate_hz, float base_ms,
     c->level = level;
 }
 
+// The delay line read delay samples before pos (pos is offset by the
+// buffer size by the caller so the difference stays positive), linearly
+// interpolated.
 static inline float chorus_tap(const FsChorus *c, uint32_t pos, float delay) {
     const float rp = (float)pos - delay;
     const float fl = floorf(rp);
@@ -174,6 +215,9 @@ static inline float chorus_tap(const FsChorus *c, uint32_t pos, float delay) {
     return a + f * (b - a);
 }
 
+// See fs_effects.h. The sine LFO is evaluated only at block ends; within
+// the block each tap's delay ramps linearly to its new target, which is
+// smooth enough at chorus rates and saves a sine per sample per tap.
 void FS_RAM_FUNC(fs_chorus_process)(FsChorus *c, const float *in, float *left, float *right, uint32_t n) {
     // New delay targets for the end of this block (sine LFO per tap)
     c->phase += c->phase_step;
@@ -214,6 +258,8 @@ void FS_RAM_FUNC(fs_chorus_process)(FsChorus *c, const float *in, float *left, f
 // ---------------------------------------------------------------------------
 
 // RBJ shelving filters with slope 1. Only computed when a setting changes.
+// Writes the normalised coefficients of a low (high = false) or high shelf
+// with corner hz and gain db into *f.
 static void shelf(FsBiquad *f, float sample_rate, float hz, float db, bool high) {
     const float A = powf(10.0f, db / 40.0f);
     const float w = 6.2831853f * hz / sample_rate;
@@ -241,11 +287,14 @@ static void shelf(FsBiquad *f, float sample_rate, float hz, float db, bool high)
     f->a1 = a1 * inv; f->a2 = a2 * inv;
 }
 
+// See fs_effects.h.
 void fs_eq_init(FsEq *eq, float sample_rate) {
     memset(eq->z, 0, sizeof(eq->z));
     fs_eq_set(eq, sample_rate, 200.0f, 0.0f, 3000.0f, 0.0f);
 }
 
+// See fs_effects.h. Clearing the state on activation avoids a burst from
+// stale values left from when the EQ was last on.
 void fs_eq_set(FsEq *eq, float sample_rate, float low_hz, float low_db, float high_hz, float high_db) {
     eq->low_hz = low_hz; eq->low_db = low_db;
     eq->high_hz = high_hz; eq->high_db = high_db;
@@ -256,6 +305,8 @@ void fs_eq_set(FsEq *eq, float sample_rate, float low_hz, float low_db, float hi
     eq->active = active;
 }
 
+// One sample through a biquad in transposed direct form II; z[0..1] is
+// its state.
 static inline float biquad(const FsBiquad *f, float x, float *z) {
     const float y = f->b0 * x + z[0];
     z[0] = f->b1 * x - f->a1 * y + z[1];
@@ -263,6 +314,8 @@ static inline float biquad(const FsBiquad *f, float x, float *z) {
     return y;
 }
 
+// See fs_effects.h. Low shelf then high shelf, each channel in turn, with
+// the state held in locals for the loop.
 void FS_RAM_FUNC(fs_eq_process)(FsEq *eq, float *left, float *right, uint32_t n) {
     if (!eq->active) return;
     float *ch[2] = { left, right };

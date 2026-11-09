@@ -1,8 +1,17 @@
 //
-// fsfinfo - inspect a compiled .fsf font using the same reader as the synth.
+// fsfinfo.c - inspect a compiled .fsf font using the same reader as the synth.
+//
+// Loads the font with fs_font_init() with both CRC checks on, so a clean
+// run also proves the file is intact and passes the synth's validation.
+// Useful to check what sf2conv produced: which presets exist and, for one
+// preset, exactly what each region contains (ranges, sample positions,
+// loop mode, non-default generators and the modulator list).
 //
 // Usage: fsfinfo font.fsf                 list presets
 //        fsfinfo font.fsf bank program    list the regions of one preset
+//
+// Modulators are printed as [src->destination amount amt amt_src tN]
+// with src and amt_src as raw SF2 source words in hex (see fs_gen.h).
 //
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +19,9 @@
 
 #include "fs_font.h"
 
+// SF2 spec name of generator g (index into FsRegion.gen), or "?" if out of
+// range. Generator 59 is the synth's internal pitch destination and 61 is
+// the padding slot that rounds FS_GEN_COUNT up.
 static const char *gen_name(int g) {
     static const char *names[FS_GEN_COUNT] = {
         "startAddrsOffset", "endAddrsOffset", "startloopAddrsOffset", "endloopAddrsOffset",
@@ -30,7 +42,9 @@ static const char *gen_name(int g) {
     return (g >= 0 && g < FS_GEN_COUNT) ? names[g] : "?";
 }
 
-// Generators already represented by dedicated region fields
+// Generators already represented by dedicated region fields (or with no
+// meaning in a compiled region), so not worth printing in the "gens" list.
+// Returns 1 to skip.
 static int gen_skip(int g) {
     switch (g) {
         case FS_GEN_START_ADDRS_OFFSET: case FS_GEN_END_ADDRS_OFFSET:
@@ -46,6 +60,10 @@ static int gen_skip(int g) {
     }
 }
 
+// Load and validate the font, then list either all presets (one argument)
+// or the regions of one bank:program (three arguments). Generators equal
+// to their SF2 default are not printed. Returns 0 on success, 1 on a file,
+// validation or lookup error, 2 on bad usage.
 int main(int argc, char **argv) {
     if (argc != 2 && argc != 4) {
         fprintf(stderr, "usage: fsfinfo font.fsf [bank program]\n");

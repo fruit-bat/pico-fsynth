@@ -2,15 +2,22 @@
 """Generate small MIDI files that exercise specific synth features.
 
 Usage: make_test_midi.py OUTPUT_DIR
+
+Writes one format 0 Standard MIDI File per test (scale, gm_tour, drums,
+expression, poly, solo_pad, fx_reverb, fx_chorus) into OUTPUT_DIR, creating
+it if needed, and prints each path. Each test's docstring says what it
+exercises. Used by render_compare.sh; pure standard library.
 """
 import os
 import struct
 import sys
 
-PPQ = 480
+PPQ = 480  # Ticks per quarter note
 
 
 def vlq(n):
+    """Encode n as a MIDI variable length quantity (7 bits per byte, MSB
+    first, high bit set on all but the last byte)."""
     out = [n & 0x7F]
     n >>= 7
     while n:
@@ -20,30 +27,45 @@ def vlq(n):
 
 
 class Track:
+    """A MIDI track built from events at absolute ticks, in any order.
+
+    Events at the same tick keep the order they were added in. Channels are
+    0-based (9 = GM drums).
+    """
+
     def __init__(self):
+        """Start an empty track."""
         self.events = []  # (tick, order, bytes)
 
     def add(self, tick, data):
+        """Add a raw event (status byte first) at an absolute tick."""
         self.events.append((tick, len(self.events), bytes(data)))
 
     def note(self, tick, ch, key, vel, length):
+        """Add a note on at tick and its note off length ticks later."""
         self.add(tick, [0x90 | ch, key, vel])
         self.add(tick + length, [0x80 | ch, key, 0])
 
     def cc(self, tick, ch, num, val):
+        """Add a control change (controller num, value 0..127)."""
         self.add(tick, [0xB0 | ch, num, val])
 
     def program(self, tick, ch, prog):
+        """Add a program change (prog 0..127)."""
         self.add(tick, [0xC0 | ch, prog])
 
     def bend(self, tick, ch, value):
+        """Add a pitch bend; value is 14 bit, 0..16383 with 8192 = centre."""
         self.add(tick, [0xE0 | ch, value & 0x7F, (value >> 7) & 0x7F])
 
     def tempo(self, tick, bpm):
+        """Add a Set Tempo meta event (stored as microseconds per quarter)."""
         us = int(60_000_000 / bpm)
         self.add(tick, [0xFF, 0x51, 3, (us >> 16) & 0xFF, (us >> 8) & 0xFF, us & 0xFF])
 
     def encode(self):
+        """Return the complete MTrk chunk: events sorted by tick with delta
+        times, followed by End of Track. Running status is not used."""
         out = bytearray()
         last = 0
         for tick, _, data in sorted(self.events):
@@ -54,6 +76,7 @@ class Track:
 
 
 def write(path, track):
+    """Write a format 0 MIDI file with one track at PPQ ticks per quarter."""
     with open(path, "wb") as f:
         f.write(b"MThd" + struct.pack(">IHHH", 6, 0, 1, PPQ))
         f.write(track.encode())
@@ -210,6 +233,7 @@ def fx_chorus():
 
 
 def main():
+    """Write every test file into the directory given on the command line."""
     if len(sys.argv) != 2:
         print(__doc__)
         sys.exit(2)

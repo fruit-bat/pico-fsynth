@@ -1,7 +1,28 @@
 #pragma once
 //
-// The synthesizer: 16 MIDI channels, a shared pool of voices, mixing and
-// effects. Feed it MIDI messages and pull blocks of stereo audio.
+// fs_synth.h - the synthesizer: 16 MIDI channels, a shared pool of voices,
+// mixing and effects. Feed it MIDI messages and pull blocks of stereo
+// audio. This is the core's public API.
+//
+// Typical use:
+//   fs_font_init(&font, blob, size, true, false);
+//   fs_synth_init(&synth, &font, 44100);
+//   loop:
+//     fs_synth_midi(&synth, msg, len);      // any number of messages
+//     fs_synth_render(&synth, out);         // FS_BLOCK_SIZE stereo frames
+//
+// Threading: the synth is not thread safe. All calls must come from one
+// thread (on the Pico, the render core), except fs_synth_render_part,
+// which is designed to run concurrently on several cores (see below).
+// MIDI is applied between blocks, so its timing is quantised to the block
+// size (32 frames = 0.7 ms at 44.1 kHz).
+//
+// Memory: FsSynth is large (mainly the per-voice stream rings and the
+// reverb), so make it static, never a local.
+//
+// Output level: voices mix at int16 sample scale; the master gain (default
+// 0.2) and master volume scale the mix down to full scale = 1.0. Many loud
+// voices can still clip; stats.clipped counts it.
 //
 #include <stdint.h>
 #include <stdbool.h>
@@ -10,15 +31,17 @@
 #include "fs_voice.h"
 #include "fs_effects.h"
 
+// Counters since fs_synth_init, for status reports and tuning. Plain
+// fields: the caller may read or reset them between blocks.
 typedef struct {
-    uint32_t blocks;
-    uint32_t notes;
+    uint32_t blocks;            // Blocks rendered
+    uint32_t notes;             // Note-ons that found a preset
     uint32_t voices_started;
     uint32_t voices_stolen;
     uint32_t voices_cut;        // Steals that had to cut a voice (no spare slot to fade it)
     uint32_t stolen_by_channel[16];  // Steals of held (not releasing) voices per channel
     uint32_t notes_dropped;     // No preset/region for the note
-    uint32_t peak_voices;
+    uint32_t peak_voices;       // Most voices active at once, including fading ones
     uint32_t clipped;           // Output samples that clipped
     float peak;                 // Largest output sample magnitude (1.0 = full scale); reset by the user
     // Profiling, per render part, CPU cycles (device only; 0 on the host)
@@ -30,19 +53,25 @@ typedef struct {
     uint32_t start_count;
 } FsSynthStats;
 
+// The whole synthesizer state. Treat it as opaque except stats and the
+// documented setters; fields are public only so it can be allocated
+// statically.
 typedef struct {
     const FsFont *font;
     float sample_rate;
-    float gain;
+    float gain;                 // Master gain, see fs_synth_set_gain
     float master_volume;        // GM Master Volume SysEx, 0..1 (default 1)
     bool reverb_enabled;
     bool chorus_enabled;
 
     FsChannel channels[FS_MIDI_CHANNELS];
-    const FsPreset *presets[FS_MIDI_CHANNELS];
+    const FsPreset *presets[FS_MIDI_CHANNELS];  // Current preset per channel, NULL if none
 
     FsVoice voices[FS_TOTAL_VOICES];
-    uint8_t active[FS_TOTAL_VOICES];    // Indices of active voices
+    // Indices into voices[] of the voices in use, in no particular order
+    // (freeing swaps the last entry into the gap). Rendering walks this
+    // list, so free voices cost nothing.
+    uint8_t active[FS_TOTAL_VOICES];
     uint32_t active_count;
     uint32_t dying_count;               // Active voices fading out after being stolen
 
@@ -50,8 +79,8 @@ typedef struct {
     // added here and decays quickly, so the output has no step
     float declick_l;
     float declick_r;
-    float declick_decay;
-    uint32_t serial;
+    float declick_decay;                // Per-sample decay factor (1 ms time constant)
+    uint32_t serial;                    // Last voice serial handed out
 
     // Key and velocity ranges and exclusive class of the font's regions,
     // in RAM (see FS_REGION_INDEX_SIZE)
@@ -60,6 +89,8 @@ typedef struct {
     // Active voices per channel and key, for the voice stealing policy
     uint8_t key_voices[FS_MIDI_CHANNELS][128];
 
+    // Sample stream ring of each voice slot (FsStream.ring points here).
+    // By far the largest member.
     int16_t rings[FS_TOTAL_VOICES][FS_STREAM_FRAMES + FS_STREAM_GUARD];
 
     // One set of mix buses per render part (core), summed in render_end
@@ -86,6 +117,11 @@ typedef struct {
     FsSynthStats stats;
 } FsSynth;
 
+// Set up the synth for a font (which must stay valid) at a sample rate of
+// at most FS_MAX_SAMPLE_RATE. All channels get their GM defaults, no voices
+// play, effects are on, EQ flat, gain 0.2, master volume full. Copies the
+// region key/velocity ranges into RAM (region_index). Call once; use
+// fs_synth_reset to return to defaults later.
 void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate);
 
 // Master gain (linear). Default 0.2, as FluidSynth.
@@ -115,21 +151,44 @@ static inline void fs_synth_set_effects(FsSynth *s, bool reverb, bool chorus) {
 // Reverb: room size 0..1, damping 0..1 (high frequency loss), width 0..1, level 0..1
 void fs_synth_set_reverb(FsSynth *s, float room, float damp, float width, float level);
 // Chorus: LFO rate in Hz, modulation depth in ms, level 0..
+// Values are clamped to rate 0.01..10 Hz, depth 0..20 ms, level 0..4.
 void fs_synth_set_chorus(FsSynth *s, float rate_hz, float depth_ms, float level);
 
+// MIDI channel voice messages. chan is 0..15; out of range channels and
+// keys are ignored. These take effect at the next rendered block.
+//
+// Note on: starts a voice for every matching region of the channel's
+// preset, stealing voices if the pool is full. Velocity 0 is a note off.
+// Re-striking a sounding key releases its previous voices; a note in an
+// exclusive class (e.g. open/closed hi-hat) quickly cuts the channel's
+// other voices in that class.
 void fs_synth_note_on(FsSynth *s, uint8_t chan, uint8_t key, uint8_t vel);
+// Note off: releases the key's voices, or marks them sustained while the
+// sustain pedal (CC64) is down.
 void fs_synth_note_off(FsSynth *s, uint8_t chan, uint8_t key);
+// Control change: stores the value for the modulators, and handles bank
+// select (CC0), RPN 0 pitch bend range (CC101/100 then CC6), sustain
+// (CC64), all sound off (CC120), reset all controllers (CC121) and all
+// notes off (CC123-127).
 void fs_synth_control_change(FsSynth *s, uint8_t chan, uint8_t cc, uint8_t value);
+// Program change: selects the preset for the channel's current bank,
+// falling back to bank 0 and then to preset 0:0 (drum channels to kit 0)
+// if the font lacks it. Sounding notes keep their old preset.
 void fs_synth_program_change(FsSynth *s, uint8_t chan, uint8_t program);
-void fs_synth_pitch_bend(FsSynth *s, uint8_t chan, uint16_t value);  // 0..16383
-void fs_synth_channel_pressure(FsSynth *s, uint8_t chan, uint8_t value);
+void fs_synth_pitch_bend(FsSynth *s, uint8_t chan, uint16_t value);  // 0..16383, 8192 = centre
+void fs_synth_channel_pressure(FsSynth *s, uint8_t chan, uint8_t value);  // 0..127
+// Fade out every voice on every channel within a few ms.
 void fs_synth_all_sound_off(FsSynth *s);
 void fs_synth_reset(FsSynth *s);    // GM reset: controllers, programs, sound off
 
-// Dispatch a complete MIDI channel message (status byte first).
+// Dispatch a complete MIDI message (status byte first, no running status)
+// to the functions above. Also understands these SysEx messages (msg
+// starts F0, ends F7): GM System On, GM2 System On and GS Reset (all
+// fs_synth_reset), GM Master Volume and GS master EQ. Others are ignored.
 void fs_synth_midi(FsSynth *s, const uint8_t *msg, uint32_t len);
 
-// Render FS_BLOCK_SIZE stereo frames as interleaved int16
+// Render FS_BLOCK_SIZE stereo frames as interleaved int16 (L, R, L, R...).
+// Out of range samples are clipped and counted in stats.clipped.
 void fs_synth_render(FsSynth *s, int16_t *out);
 
 // Same, as float in [-1, 1] (unclipped)
@@ -151,4 +210,5 @@ void fs_synth_render_part(FsSynth *s, uint32_t part);
 void fs_synth_render_end(FsSynth *s, int16_t *out);
 void fs_synth_render_end_float(FsSynth *s, float *left, float *right);
 
+// Voices currently in use, including ones fading out after a steal.
 static inline uint32_t fs_synth_active_voices(const FsSynth *s) { return s->active_count; }

@@ -1,7 +1,16 @@
 #pragma once
 //
-// Compile time configuration. Override any of these with -D on the
-// command line (or target_compile_definitions in CMake).
+// fs_config.h - compile time configuration of the synth core.
+//
+// Every core file includes this. Override any #ifndef'd value with -D on
+// the command line (or target_compile_definitions in CMake); the firmware
+// and the host tools may use different values. The rest are derived
+// values and checks.
+//
+// Memory: the large per-voice cost is the stream ring,
+// (FS_STREAM_FRAMES + 4) * 2 bytes per voice slot (FS_TOTAL_VOICES slots),
+// plus the reverb and chorus buffers if enabled. On the Pico everything
+// lives in SRAM; see FsSynth in fs_synth.h.
 //
 
 // Maximum simultaneous voices
@@ -86,7 +95,10 @@
 #define FS_RENDER_EFFECTS_VOICES 4
 #endif
 
-// Place time critical functions in RAM on the Pico
+// Place time critical functions in RAM on the Pico. Wrap the function name
+// in a definition: void FS_RAM_FUNC(name)(args) { ... }. Code in RAM does
+// not stall on flash cache misses, and keeps running while flash is being
+// written. A no-op on the host.
 #ifdef PICO_ON_DEVICE
 #include "pico.h"
 #define FS_RAM_FUNC(f) __not_in_flash_func(f)
@@ -95,7 +107,8 @@
 #endif
 
 // CPU cycle counter for profiling (the DWT counter on the M33, which the
-// firmware enables on each core)
+// firmware enables on each core). Always 0 on the host, so the profiling
+// counters in FsSynthStats stay at 0 there.
 #ifndef FS_CYCLE_COUNT
 #if defined(PICO_ON_DEVICE) && PICO_RP2350
 #include "hardware/structs/m33.h"
@@ -108,7 +121,9 @@
 #define FS_MIDI_CHANNELS 16
 
 // A block must never consume more than half the stream ring, which bounds
-// the playback rate ratio (about +3.9 octaves at equal sample rates).
+// the playback rate ratio (about +3.9 octaves at equal sample rates). The
+// voice clamps its playback increment (source frames per output frame) to
+// this; with the defaults it is 15.
 #define FS_MAX_INCREMENT ((float)((FS_STREAM_FRAMES / 2 - 4) / FS_BLOCK_SIZE))
 
 _Static_assert((FS_STREAM_FRAMES & (FS_STREAM_FRAMES - 1)) == 0, "FS_STREAM_FRAMES must be a power of 2");

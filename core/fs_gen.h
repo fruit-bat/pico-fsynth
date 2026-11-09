@@ -1,10 +1,26 @@
 #pragma once
 //
-// SoundFont 2 generator and modulator definitions shared by the
-// host-side converter and the synth core.
+// fs_gen.h - SoundFont 2 generator and modulator definitions, shared by
+// the host-side converter (sf2conv) and the synth core.
+//
+// In SF2 terms:
+//   A generator is one numbered parameter of a sound (filter cutoff,
+//   envelope attack time, pan, ...), given as a 16-bit value in the unit
+//   the spec defines for it (cents, centibels, timecents; see fs_math.h).
+//   FsRegion.gen[] holds one value per generator, indexed by FsGen.
+//
+//   A modulator adds a controller-driven amount to one generator at play
+//   time: amount * source(primary) * source(amount source). Sources are
+//   MIDI inputs (velocity, key, a CC, pitch wheel...) passed through a
+//   curve. The voice evaluates them in fs_voice.c (mod_source, eval_mods).
+//
+// The enum values are the generator numbers from SF2 2.04 section 8.1.2
+// and must not be renumbered: they are stored in compiled fonts.
 //
 #include <stdint.h>
 
+// Generator numbers (SF2 2.04 section 8.1.2), also the index into
+// FsRegion.gen[].
 typedef enum {
     FS_GEN_START_ADDRS_OFFSET = 0,
     FS_GEN_END_ADDRS_OFFSET = 1,
@@ -84,7 +100,13 @@ typedef enum {
 // Default values for every generator (SF2 2.04 section 8.1.3)
 extern const int16_t fs_gen_default[FS_GEN_COUNT];
 
-// Modulator source encoding (SF2 2.04 section 8.2.1)
+// Modulator source encoding (SF2 2.04 section 8.2.1), a 16-bit word:
+//   bits 0-6   index: a general controller (FS_MOD_GC_*) or, with the CC
+//              bit set, a MIDI CC number
+//   bit 7      CC: index is a MIDI CC number
+//   bit 8      negative (direction): the input runs from 1 down to 0
+//   bit 9      bipolar (polarity): output in [-1, 1] instead of [0, 1]
+//   bits 10-15 curve type (FS_MOD_TYPE_*)
 #define FS_MOD_SRC_INDEX_MASK   0x007f
 #define FS_MOD_SRC_CC           0x0080
 #define FS_MOD_SRC_NEGATIVE     0x0100
@@ -107,11 +129,13 @@ extern const int16_t fs_gen_default[FS_GEN_COUNT];
 #define FS_MOD_TYPE_CONVEX  2
 #define FS_MOD_TYPE_SWITCH  3
 
-// Modulator transforms
-#define FS_MOD_TRANSFORM_LINEAR   0
-#define FS_MOD_TRANSFORM_ABSOLUTE 2
+// Modulator transforms, applied to the product of amount and sources
+#define FS_MOD_TRANSFORM_LINEAR   0     // Used as is
+#define FS_MOD_TRANSFORM_ABSOLUTE 2     // Absolute value
 
-// Modulator record as stored in a compiled font (12 bytes)
+// Modulator record as stored in a compiled font (12 bytes). The same
+// fields as the SF2 pmod/imod record, padded to a multiple of 4 bytes.
+// Contribution to generator dst = amount * src(...) * amt_src(...).
 typedef struct {
     uint16_t src;       // Primary source
     uint16_t dst;       // Destination generator
@@ -121,5 +145,10 @@ typedef struct {
     uint16_t pad;
 } FsModulator;
 
+// The ten default modulators every SF2 instrument zone starts with (SF2
+// 2.04 section 8.4): velocity and CC7/CC11 to attenuation, mod wheel to
+// vibrato, pan, reverb/chorus sends, pitch wheel... sf2conv copies them
+// into each region's modulator list, so the synth itself never consults
+// this table.
 #define FS_DEFAULT_MODULATOR_COUNT 10
 extern const FsModulator fs_default_modulators[FS_DEFAULT_MODULATOR_COUNT];

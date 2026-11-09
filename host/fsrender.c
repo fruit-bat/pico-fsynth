@@ -1,7 +1,35 @@
 //
-// fsrender - render a MIDI file to a WAV file with the pico-fsynth core.
+// fsrender.c - render a MIDI file to a WAV file with the pico-fsynth core.
 //
-// Usage: fsrender [-r rate] [-g gain] font.fsf song.mid out.wav
+// The reference renderer: it runs exactly the same core code as the
+// firmware (fs_synth, fs_voice, fs_effects, fs_smf), so a render here
+// sounds like the Pico (results can differ in the last float bits between
+// compilers and FPUs). Use it
+// to hear and compare changes without flashing (see render_compare.sh and
+// compare_wav.py).
+//
+// The song is played block by block (FS_BLOCK_SIZE frames), dispatching
+// the MIDI events due in each block before rendering it. After the song
+// ends, rendering continues until all voices have finished (at least 1 s,
+// for the reverb tail) or 5 s have passed.
+//
+// Output is 16-bit stereo PCM. The WAV header is written first with a
+// zero length and rewritten with the real length at the end.
+//
+// Usage: fsrender [options] font.fsf song.mid out.wav
+//   -r rate                         sample rate, 8000..FS_MAX_SAMPLE_RATE
+//                                   (default 44100)
+//   -g gain                         master gain (default 0.2, as FluidSynth)
+//   -d                              dry: reverb and chorus off
+//   -t                              render on two threads, as the Pico's two
+//                                   cores do (checks the split is safe)
+//   -R room,damp,width,level        reverb settings, each 0..1
+//   -C rate_hz,depth_ms,level       chorus settings
+//   -E bass_db,treble_db[,bass_hz,treble_hz]
+//                                   master EQ (default flat, 200 / 3000 Hz)
+//
+// Prints the audio length, CPU time and voice statistics (notes, peak
+// voices, steals, clipping) when done.
 //
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +42,8 @@
 #include "fs_synth.h"
 #include "fs_smf.h"
 
+// Load a whole file into a heap buffer; its size is returned in *size.
+// Exits with status 1 if the file cannot be opened or read.
 static void *read_file(const char *path, size_t *size) {
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "cannot open %s\n", path); exit(1); }
@@ -27,9 +57,12 @@ static void *read_file(const char *path, size_t *size) {
     return buf;
 }
 
+// Store a 16 / 32-bit value little-endian at p (WAV byte order).
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put32(uint8_t *p, uint32_t v) { put16(p, (uint16_t)v); put16(p + 2, (uint16_t)(v >> 16)); }
 
+// Write a 44-byte canonical WAV header for 16-bit stereo PCM at rate Hz
+// with the given number of frames, at the current position of f.
 static void write_wav_header(FILE *f, uint32_t rate, uint32_t frames) {
     uint8_t h[44];
     const uint32_t data = frames * 4;
@@ -46,6 +79,9 @@ static void write_wav_header(FILE *f, uint32_t rate, uint32_t frames) {
 static sem_t work_go, work_done;
 static volatile bool work_quit;
 
+// Worker thread body (the "core 0" side): for each block, wait for
+// work_go, render parts 1..FS_RENDER_PARTS-1 and post work_done. Exits
+// when woken with work_quit set. arg is the FsSynth.
 static void *worker(void *arg) {
     FsSynth *synth = (FsSynth *)arg;
     for (;;) {
@@ -56,17 +92,23 @@ static void *worker(void *arg) {
     }
 }
 
+// MIDI file player callback: pass each event to the synth (ctx).
 static void on_midi(void *ctx, const uint8_t *msg, uint32_t len) {
     fs_synth_midi((FsSynth *)ctx, msg, len);
 }
 
+// Parse the options (see the file header), load the font and MIDI file,
+// render to the WAV file and print statistics. Returns 0 on success, 1 on
+// a file or format error, 2 on bad usage.
 int main(int argc, char **argv) {
     uint32_t rate = 44100;
     float gain = 0.2f;
     bool dry = false;
     bool threaded = false;
-    float rv[4] = { -1, -1, -1, -1 };   // Reverb room, damp, width, level (-1 = default)
-    float ch[3] = { -1, -1, -1 };       // Chorus rate, depth, level
+    // Effect settings start at the synth's defaults, so -R / -C may give
+    // only the first few values
+    float rv[4] = { FS_REVERB_DEFAULT_ROOM, FS_REVERB_DEFAULT_DAMP, FS_REVERB_DEFAULT_WIDTH, FS_REVERB_DEFAULT_LEVEL };
+    float ch[3] = { FS_CHORUS_DEFAULT_RATE, FS_CHORUS_DEFAULT_DEPTH, FS_CHORUS_DEFAULT_LEVEL };
     float eq[4] = { 200, 0, 3000, 0 };  // Master EQ low Hz, low dB, high Hz, high dB
     int argi = 1;
     while (argi < argc && argv[argi][0] == '-') {
@@ -102,8 +144,8 @@ int main(int argc, char **argv) {
     fs_synth_init(&synth, &font, rate);
     fs_synth_set_gain(&synth, gain);
     fs_synth_set_effects(&synth, !dry, !dry);
-    if (rv[0] >= 0) fs_synth_set_reverb(&synth, rv[0], rv[1], rv[2], rv[3]);
-    if (ch[0] >= 0) fs_synth_set_chorus(&synth, ch[0], ch[1], ch[2]);
+    fs_synth_set_reverb(&synth, rv[0], rv[1], rv[2], rv[3]);
+    fs_synth_set_chorus(&synth, ch[0], ch[1], ch[2]);
     fs_synth_set_eq(&synth, eq[0], eq[1], eq[2], eq[3]);
 
     FILE *out = fopen(argv[argi + 2], "wb");
@@ -122,6 +164,7 @@ int main(int argc, char **argv) {
         pthread_create(&thread, NULL, worker, &synth);
     }
 
+    // One block per iteration: MIDI events due in the block, then audio
     for (;;) {
         const bool playing = fs_smf_advance(&smf, FS_BLOCK_SIZE, on_midi, &synth);
         if (threaded) {

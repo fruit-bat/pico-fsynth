@@ -1,16 +1,39 @@
+//
+// fs_synth.c - MIDI handling, voice allocation and stealing, and the
+// block mixer. See fs_synth.h for the API.
+//
+// Per block (fs_synth_render or the begin/part/end split):
+//   begin  clear the per-part mix buses
+//   part   render a slice of the active voices into that part's buses;
+//          part 0 also runs reverb and chorus on last block's sends
+//   end    free finished voices, sum the parts, add the declick tail,
+//          master EQ, gain, convert to the output format
+//
+// Voice pool: FS_MAX_VOICES voices may play normally, plus
+// FS_STEAL_RESERVE slots used only to fade out stolen voices (see
+// voice_alloc). The active[] list keeps the voices in use so rendering
+// and MIDI handling never scan free slots.
+//
+// MIDI handlers and render functions are placed in RAM on the Pico;
+// one-off setup (init, effect settings) stays in flash.
+//
 #include <string.h>
 #include "fs_synth.h"
 #include "fs_math.h"
 
 #define B FS_BLOCK_SIZE
-#define FS_DRUM_CHANNEL 9
-#define FS_DRUM_BANK 128
-#define FS_RPN_NONE 0x3fff
+#define FS_DRUM_CHANNEL 9           // MIDI channel 10, numbered from 0
+#define FS_DRUM_BANK 128            // SF2 bank of GM percussion kits
+#define FS_RPN_NONE 0x3fff          // "Null" RPN: data entry is ignored
 
 // ---------------------------------------------------------------------------
 // Channels and presets
 // ---------------------------------------------------------------------------
 
+// Preset for a channel's bank and program, with GM-style fallbacks so a
+// small font still plays something: drums try 128:program then 128:0;
+// melodic channels try bank:program, 0:program, then 0:0. NULL only if
+// none of those exist.
 static const FsPreset *FS_RAM_FUNC(find_preset)(const FsFont *font, bool drums, uint16_t bank, uint8_t program) {
     const FsPreset *p;
     if (drums) {
@@ -24,6 +47,9 @@ static const FsPreset *FS_RAM_FUNC(find_preset)(const FsFont *font, bool drums, 
     return p;
 }
 
+// Reset the controllers that CC121 resets (per the MIDI recommended
+// practice: volume, pan and effect sends are kept). Does not release
+// sustained notes; the caller does that.
 static void FS_RAM_FUNC(channel_reset_controllers)(FsChannel *ch) {
     // Controllers reset by "reset all controllers" (CC121)
     ch->cc[1] = 0;      // Mod wheel
@@ -38,6 +64,9 @@ static void FS_RAM_FUNC(channel_reset_controllers)(FsChannel *ch) {
     ch->serial++;
 }
 
+// Put a channel in its power-on (GM reset) state: every controller at its
+// default, program 0, bank 0 (or the drum bank on channel 10), pitch bend
+// range 2 semitones. Does not touch its voices.
 static void FS_RAM_FUNC(channel_init)(FsSynth *s, uint8_t chan) {
     FsChannel *ch = &s->channels[chan];
     memset(ch, 0, sizeof(*ch));
@@ -57,6 +86,8 @@ static void FS_RAM_FUNC(channel_init)(FsSynth *s, uint8_t chan) {
 // Voice pool
 // ---------------------------------------------------------------------------
 
+// Maintain key_voices, the count of live (not stolen) voices per channel
+// and key, which steal_score uses to spot layered notes.
 static void FS_RAM_FUNC(voice_count_add)(FsSynth *s, const FsVoice *v) {
     s->key_voices[v->channel][v->key]++;
 }
@@ -65,6 +96,9 @@ static void FS_RAM_FUNC(voice_count_remove)(FsSynth *s, const FsVoice *v) {
     s->key_voices[v->channel][v->key]--;
 }
 
+// Return the voice at position active_index of the active list to the
+// pool. The last active entry moves into its place, so callers looping
+// over the list must go backwards (or re-check index i).
 static void FS_RAM_FUNC(voice_free)(FsSynth *s, uint32_t active_index) {
     FsVoice *v = &s->voices[s->active[active_index]];
     if (v->stolen) s->dying_count--;   // Already removed from the key counts
@@ -103,6 +137,12 @@ static float FS_RAM_FUNC(steal_score)(const FsSynth *s, const FsVoice *v) {
 // in one of the FS_STEAL_RESERVE spare slots while the new note starts in a
 // free slot. Only if every spare slot is busy fading is a voice cut off,
 // with its last output value handed to the declicker.
+//
+// note_serial is the serial the note's first voice will get: voices with
+// that serial or later belong to the note being started (its other layers)
+// and are never stolen for it. Returns a voice for the caller to start
+// with fs_voice_start (already in the active list), or NULL if nothing can
+// be stolen.
 static FsVoice *FS_RAM_FUNC(voice_alloc)(FsSynth *s, uint32_t note_serial) {
     if (s->active_count - s->dying_count >= FS_MAX_VOICES) {
         // Choose a victim, never a voice of the note being started or one
@@ -158,6 +198,7 @@ static FsVoice *FS_RAM_FUNC(voice_alloc)(FsSynth *s, uint32_t note_serial) {
 // API
 // ---------------------------------------------------------------------------
 
+// See fs_synth.h.
 void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
     fs_math_init();
     memset(&s->stats, 0, sizeof(s->stats));
@@ -201,6 +242,7 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
 #endif
 }
 
+// See fs_synth.h. Clamps every value to 0..1.
 void fs_synth_set_reverb(FsSynth *s, float room, float damp, float width, float level) {
 #if FS_ENABLE_REVERB
     fs_reverb_set(&s->reverb, fs_clampf(room, 0.0f, 1.0f), fs_clampf(damp, 0.0f, 1.0f),
@@ -210,10 +252,14 @@ void fs_synth_set_reverb(FsSynth *s, float room, float damp, float width, float 
 #endif
 }
 
+// See fs_synth.h. Gains are clamped to +-24 dB, beyond the GS range, for
+// host use (fsrender -E).
 void fs_synth_set_eq(FsSynth *s, float low_hz, float low_db, float high_hz, float high_db) {
     fs_eq_set(&s->eq, s->sample_rate, low_hz, fs_clampf(low_db, -24.0f, 24.0f), high_hz, fs_clampf(high_db, -24.0f, 24.0f));
 }
 
+// See fs_synth.h. Stores the GS parameter (clamped to its legal range; it
+// is what settings.c saves) and rebuilds the EQ from all four.
 void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value) {
     if (param > 3) return;
     if (param == 1 || param == 3) value = value < 0x34 ? 0x34 : value > 0x4c ? 0x4c : value;
@@ -223,15 +269,17 @@ void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value) {
                     s->eq_gs[2] ? 6000.0f : 3000.0f, (float)((int)s->eq_gs[3] - 0x40));
 }
 
+// See fs_synth.h. The base delay is fixed at 12 ms.
 void fs_synth_set_chorus(FsSynth *s, float rate_hz, float depth_ms, float level) {
 #if FS_ENABLE_CHORUS
-    fs_chorus_set(&s->chorus, s->sample_rate, fs_clampf(rate_hz, 0.01f, 10.0f), 12.0f,
+    fs_chorus_set(&s->chorus, s->sample_rate, fs_clampf(rate_hz, 0.01f, 10.0f), FS_CHORUS_DEFAULT_BASE,
                   fs_clampf(depth_ms, 0.0f, 20.0f), fs_clampf(level, 0.0f, 4.0f));
 #else
     (void)s; (void)rate_hz; (void)depth_ms; (void)level;
 #endif
 }
 
+// See fs_synth.h. Only voices still held (ON) are affected.
 void FS_RAM_FUNC(fs_synth_note_off)(FsSynth *s, uint8_t chan, uint8_t key) {
     if (chan >= FS_MIDI_CHANNELS || key > 127) return;
     const bool sustain = s->channels[chan].cc[64] >= 64;
@@ -243,6 +291,11 @@ void FS_RAM_FUNC(fs_synth_note_off)(FsSynth *s, uint8_t chan, uint8_t key) {
     }
 }
 
+// See fs_synth.h. Three passes: find the matching regions (at most 32)
+// and their exclusive classes; release or kill the channel's existing
+// voices as needed; then allocate and start a voice per region. All the
+// note's voices share note_serial as a floor, so stealing for a later
+// layer never takes an earlier layer of the same note.
 void FS_RAM_FUNC(fs_synth_note_on)(FsSynth *s, uint8_t chan, uint8_t key, uint8_t vel) {
     if (chan >= FS_MIDI_CHANNELS || key > 127) return;
     if (vel == 0) {
@@ -308,6 +361,7 @@ void FS_RAM_FUNC(fs_synth_note_on)(FsSynth *s, uint8_t chan, uint8_t key, uint8_
     if (s->active_count > s->stats.peak_voices) s->stats.peak_voices = s->active_count;
 }
 
+// Sustain pedal up: release the channel's voices that were held by it.
 static void FS_RAM_FUNC(release_sustained)(FsSynth *s, uint8_t chan) {
     for (uint32_t i = 0; i < s->active_count; ++i) {
         FsVoice *v = &s->voices[s->active[i]];
@@ -315,6 +369,8 @@ static void FS_RAM_FUNC(release_sustained)(FsSynth *s, uint8_t chan) {
     }
 }
 
+// CC123: release every voice on the channel (normal release times).
+// Unlike a note-off this ignores the sustain pedal.
 static void FS_RAM_FUNC(all_notes_off)(FsSynth *s, uint8_t chan) {
     for (uint32_t i = 0; i < s->active_count; ++i) {
         FsVoice *v = &s->voices[s->active[i]];
@@ -322,6 +378,7 @@ static void FS_RAM_FUNC(all_notes_off)(FsSynth *s, uint8_t chan) {
     }
 }
 
+// CC120: fade out every voice on the channel within a few ms.
 static void FS_RAM_FUNC(channel_sound_off)(FsSynth *s, uint8_t chan) {
     for (uint32_t i = 0; i < s->active_count; ++i) {
         FsVoice *v = &s->voices[s->active[i]];
@@ -329,6 +386,9 @@ static void FS_RAM_FUNC(channel_sound_off)(FsSynth *s, uint8_t chan) {
     }
 }
 
+// See fs_synth.h. Every CC bumps the channel serial, so sounding voices
+// pick up the new value at their next block. Bank select is ignored on
+// drum channels.
 void FS_RAM_FUNC(fs_synth_control_change)(FsSynth *s, uint8_t chan, uint8_t cc, uint8_t value) {
     if (chan >= FS_MIDI_CHANNELS || cc > 127) return;
     FsChannel *ch = &s->channels[chan];
@@ -370,6 +430,7 @@ void FS_RAM_FUNC(fs_synth_control_change)(FsSynth *s, uint8_t chan, uint8_t cc, 
     }
 }
 
+// See fs_synth.h. The preset is looked up here, once, not at each note.
 void FS_RAM_FUNC(fs_synth_program_change)(FsSynth *s, uint8_t chan, uint8_t program) {
     if (chan >= FS_MIDI_CHANNELS) return;
     FsChannel *ch = &s->channels[chan];
@@ -377,27 +438,35 @@ void FS_RAM_FUNC(fs_synth_program_change)(FsSynth *s, uint8_t chan, uint8_t prog
     s->presets[chan] = find_preset(s->font, ch->drums, ch->bank, ch->program);
 }
 
+// See fs_synth.h. Takes effect through the default pitch wheel modulator.
 void FS_RAM_FUNC(fs_synth_pitch_bend)(FsSynth *s, uint8_t chan, uint16_t value) {
     if (chan >= FS_MIDI_CHANNELS) return;
     s->channels[chan].pitch_bend = value & 0x3fff;
     s->channels[chan].serial++;
 }
 
+// See fs_synth.h. Takes effect through modulators (by default, vibrato
+// depth).
 void FS_RAM_FUNC(fs_synth_channel_pressure)(FsSynth *s, uint8_t chan, uint8_t value) {
     if (chan >= FS_MIDI_CHANNELS) return;
     s->channels[chan].pressure = value & 0x7f;
     s->channels[chan].serial++;
 }
 
+// See fs_synth.h.
 void FS_RAM_FUNC(fs_synth_all_sound_off)(FsSynth *s) {
     for (uint8_t c = 0; c < FS_MIDI_CHANNELS; ++c) channel_sound_off(s, c);
 }
 
+// See fs_synth.h. Gain, master volume, EQ and effect settings are device
+// settings and survive the reset.
 void FS_RAM_FUNC(fs_synth_reset)(FsSynth *s) {
     fs_synth_all_sound_off(s);
     for (uint8_t c = 0; c < FS_MIDI_CHANNELS; ++c) channel_init(s, c);
 }
 
+// See fs_synth.h. Data bytes are masked to 7 bits; missing ones read as 0.
+// The SysEx device ID byte (msg[2]) is not checked, so any ID matches.
 void FS_RAM_FUNC(fs_synth_midi)(FsSynth *s, const uint8_t *msg, uint32_t len) {
     if (len == 0) return;
     const uint8_t status = msg[0];
@@ -433,6 +502,7 @@ void FS_RAM_FUNC(fs_synth_midi)(FsSynth *s, const uint8_t *msg, uint32_t len) {
 // Rendering
 // ---------------------------------------------------------------------------
 
+// See fs_synth.h. Clears every part's buses.
 void FS_RAM_FUNC(fs_synth_render_begin)(FsSynth *s) {
     memset(s->bus_l, 0, sizeof(s->bus_l));
     memset(s->bus_r, 0, sizeof(s->bus_r));
@@ -445,6 +515,11 @@ void FS_RAM_FUNC(fs_synth_render_begin)(FsSynth *s) {
 // sends, so it gets FS_RENDER_EFFECTS_VOICES fewer voices when effects are
 // on. Only touches those voices, this part's buses and their `finished`
 // flags (part 0 also the effects state).
+//
+// The split: with handicap h = FS_RENDER_EFFECTS_VOICES (effects on) and
+// N voices, each part's share is per = ceil((N + h) / parts), and the
+// ranges are shifted down by h, so part 0 gets per - h voices (none if
+// that is negative) and the others per (the last takes what is left).
 void FS_RAM_FUNC(fs_synth_render_part)(FsSynth *s, uint32_t part) {
     const bool reverb = FS_ENABLE_REVERB && s->reverb_enabled;
     const bool chorus = FS_ENABLE_CHORUS && s->chorus_enabled;
@@ -479,6 +554,9 @@ void FS_RAM_FUNC(fs_synth_render_part)(FsSynth *s, uint32_t part) {
     s->stats.part_cycles[part] += FS_CYCLE_COUNT() - t0;
 }
 
+// See fs_synth.h. Writes FS_BLOCK_SIZE frames to left[] and right[], and
+// updates stats.peak and stats.blocks. The summed sends are kept for the
+// effects in the next block's part 0.
 void FS_RAM_FUNC(fs_synth_render_end_float)(FsSynth *s, float *left, float *right) {
     // Free finished voices. Going backwards, the voice swapped into slot i
     // by voice_free has already been checked.
@@ -531,12 +609,14 @@ void FS_RAM_FUNC(fs_synth_render_end_float)(FsSynth *s, float *left, float *righ
     s->stats.blocks++;
 }
 
+// See fs_synth.h. All parts in turn on the calling thread.
 void FS_RAM_FUNC(fs_synth_render_float)(FsSynth *s, float *left, float *right) {
     fs_synth_render_begin(s);
     for (uint32_t p = 0; p < FS_RENDER_PARTS; ++p) fs_synth_render_part(s, p);
     fs_synth_render_end_float(s, left, right);
 }
 
+// Float sample (full scale +-1.0) to int16, saturating and counting clips.
 static inline int16_t to_int16(float x, uint32_t *clipped) {
     float y = x * 32768.0f;
     if (y > 32767.0f) { y = 32767.0f; ++*clipped; }
@@ -544,6 +624,7 @@ static inline int16_t to_int16(float x, uint32_t *clipped) {
     return (int16_t)y;
 }
 
+// See fs_synth.h. render_end_float, then interleave and convert to int16.
 void FS_RAM_FUNC(fs_synth_render_end)(FsSynth *s, int16_t *out) {
     float left[B], right[B];
     fs_synth_render_end_float(s, left, right);
@@ -553,6 +634,7 @@ void FS_RAM_FUNC(fs_synth_render_end)(FsSynth *s, int16_t *out) {
     }
 }
 
+// See fs_synth.h. All parts in turn on the calling thread.
 void FS_RAM_FUNC(fs_synth_render)(FsSynth *s, int16_t *out) {
     fs_synth_render_begin(s);
     for (uint32_t p = 0; p < FS_RENDER_PARTS; ++p) fs_synth_render_part(s, p);

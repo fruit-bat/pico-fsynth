@@ -11,6 +11,12 @@
 #   port       e.g. hw:2,0,0 (default: the first port named pico-fsynth)
 #
 # Master volume and EQ are device settings and are not changed.
+#
+# Bytes sent, per channel n (0..F): Bn 78 00 (CC120 All Sound Off) and
+# Bn 79 00 (CC121 Reset All Controllers); with -g also F0 7E 7F 09 01 F7
+# (GM System On: 7E = non-real-time, 7F = all devices, 09 01 = GM on).
+#
+# Requires amidi (alsa-utils) and the synth connected over USB.
 set -e
 gm=false
 if [ "$1" = -g ]; then gm=true; shift; fi

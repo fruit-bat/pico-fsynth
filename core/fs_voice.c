@@ -1,3 +1,20 @@
+//
+// fs_voice.c - voice synthesis: modulators, envelopes, LFOs, filter and
+// the per-sample render loop. See fs_voice.h for the model.
+//
+// Cost structure: per note-on, fs_voice_start does the expensive unit
+// conversions once. Per block, fs_voice_render does a handful of exp2
+// calls (pitch, cutoff, gain) and maybe new filter coefficients. Per
+// sample, render_samples does only interpolation, the biquad and the mix;
+// that loop is where nearly all the CPU time goes, so it is specialised
+// and measured (see firmware/bench.c).
+//
+// Amplitude follows SF2/EMU practice: the volume envelope works in
+// decibels except during the attack, which is linear in amplitude.
+//
+// Everything here runs on the render path, so all functions are placed in
+// RAM on the Pico.
+//
 #include <string.h>
 #include "fs_voice.h"
 #include "fs_math.h"
@@ -15,6 +32,13 @@
 // Modulators
 // ---------------------------------------------------------------------------
 
+// Value of one modulator source (SF2 2.04 section 8.2): read the
+// controller, normalise to [0, 1), apply direction (negative), polarity
+// (bipolar maps to [-1, 1]) and curve.
+// src      encoded source word (FS_MOD_SRC_* bits, see fs_gen.h)
+// key, vel the voice's modulation key and velocity (mkey, mvel)
+// primary  true for the primary source, false for the amount source; they
+//          differ only in what "no controller" means.
 static float FS_RAM_FUNC(mod_source)(uint16_t src, const FsChannel *ch, uint8_t key, uint8_t vel, bool primary) {
     const uint32_t index = src & FS_MOD_SRC_INDEX_MASK;
     float x;
@@ -57,7 +81,9 @@ static float FS_RAM_FUNC(mod_source)(uint16_t src, const FsChannel *ch, uint8_t 
     }
 }
 
-// Sum all modulator contributions per destination generator
+// Sum all modulator contributions per destination generator into sum[],
+// in the destination's units. A primary source of exactly 0 contributes
+// nothing, so the amount source is not evaluated.
 static void FS_RAM_FUNC(eval_mods)(const FsVoice *v, const FsChannel *ch, float sum[FS_GEN_COUNT]) {
     memset(sum, 0, sizeof(float) * FS_GEN_COUNT);
     for (uint32_t i = 0; i < v->region->mod_count; ++i) {
@@ -71,11 +97,17 @@ static void FS_RAM_FUNC(eval_mods)(const FsVoice *v, const FsChannel *ch, float 
     }
 }
 
+// Effective value of generator g: the region's value plus modulators.
 static inline float gen(const FsVoice *v, const float sum[FS_GEN_COUNT], int g) {
     return (float)v->region->gen[g] + sum[g];
 }
 
 // Parameters that follow controller changes during the note
+// (pitch wheel, CC7/CC11 volume, pan, sends, filter...). Called at note-on
+// and whenever the channel's serial changes. Envelope times, LFO rates and
+// the base pitch are fixed at note-on and are not recomputed here.
+// Coarse and fine tune from modulators go into pitch_mod; the region's own
+// tuning is in pitch_base.
 static void FS_RAM_FUNC(update_dynamic)(FsVoice *v, const float sum[FS_GEN_COUNT]) {
     v->pitch_mod = sum[FS_GEN_PITCH] + 100.0f * sum[FS_GEN_COARSE_TUNE] + sum[FS_GEN_FINE_TUNE];
     v->vib_lfo_to_pitch = gen(v, sum, FS_GEN_VIB_LFO_TO_PITCH);
@@ -102,10 +134,15 @@ static void FS_RAM_FUNC(update_dynamic)(FsVoice *v, const float sum[FS_GEN_COUNT
 // Envelopes
 // ---------------------------------------------------------------------------
 
+// Timecents to a whole number of samples, rounded.
 static uint32_t FS_RAM_FUNC(tc_to_samples)(float tc, float sample_rate) {
     return (uint32_t)(fs_tc_to_sec(tc) * sample_rate + 0.5f);
 }
 
+// Enter an envelope stage: set the level, slope and number of samples it
+// lasts. Decay and release slopes are set so a full 1 -> 0 swing takes
+// the stage time, and the stage ends early on reaching the sustain level
+// (decay) or 0 (release), as the SF2 spec describes.
 static void FS_RAM_FUNC(env_enter)(FsEnv *e, uint8_t stage) {
     e->stage = stage;
     switch (stage) {
@@ -143,6 +180,8 @@ static void FS_RAM_FUNC(env_enter)(FsEnv *e, uint8_t stage) {
 }
 
 // Advance n samples and return the level at the end
+// Several stages may pass within n (e.g. zero length delay and attack).
+// Sustain and done do not change until a release.
 static float FS_RAM_FUNC(env_advance)(FsEnv *e, uint32_t n) {
     while (n) {
         if (e->stage == FS_ENV_SUSTAIN || e->stage == FS_ENV_DONE) break;
@@ -169,6 +208,10 @@ static float FS_RAM_FUNC(env_advance)(FsEnv *e, uint32_t n) {
     return e->level;
 }
 
+// Go to the release stage from wherever the envelope is. Released during
+// its delay, it never sounded, so it goes straight to done. volume is true
+// for the volume envelope, whose attack level must be converted from
+// linear amplitude to the dB scale the release works in.
 static void FS_RAM_FUNC(env_release)(FsEnv *e, bool volume) {
     if (e->stage == FS_ENV_DONE) return;
     if (e->stage == FS_ENV_DELAY) {
@@ -183,7 +226,8 @@ static void FS_RAM_FUNC(env_release)(FsEnv *e, bool volume) {
     env_enter(e, FS_ENV_RELEASE);
 }
 
-// Volume envelope level to linear amplitude
+// Volume envelope level to linear amplitude. Outside the attack, level 1
+// is 0 dB and level 0 is -96 dB (960 cB).
 static inline float vol_env_amp(const FsEnv *e) {
     switch (e->stage) {
         case FS_ENV_DELAY:
@@ -193,6 +237,7 @@ static inline float vol_env_amp(const FsEnv *e) {
     }
 }
 
+// Modulation envelope output, 0..1 (linear in every stage).
 static inline float mod_env_value(const FsEnv *e) {
     return e->stage == FS_ENV_DELAY ? 0.0f : e->level;
 }
@@ -201,6 +246,8 @@ static inline float mod_env_value(const FsEnv *e) {
 // LFOs
 // ---------------------------------------------------------------------------
 
+// Set up an LFO from its SF2 delay (timecents) and frequency (absolute
+// cents, clamped to about 0.0008 Hz .. 110 Hz). Output starts at 0.
 static void FS_RAM_FUNC(lfo_init)(FsLfo *l, float delay_tc, float freq_cents, float sample_rate) {
     l->delay = tc_to_samples(delay_tc, sample_rate);
     const float hz = fs_abs_cents_to_hz(fs_clampf(freq_cents, -16000.0f, 4500.0f));
@@ -210,6 +257,7 @@ static void FS_RAM_FUNC(lfo_init)(FsLfo *l, float delay_tc, float freq_cents, fl
 }
 
 // Triangle starting at 0 and rising, evaluated once per block
+// Counts down the delay first; value stays 0 until it has passed.
 static inline void FS_RAM_FUNC(lfo_advance)(FsLfo *l) {
     if (l->delay > B) {
         l->delay -= B;
@@ -227,6 +275,15 @@ static inline void FS_RAM_FUNC(lfo_advance)(FsLfo *l) {
 // Filter
 // ---------------------------------------------------------------------------
 
+// Set the voice's low pass filter for this block.
+// fc_cents  cutoff in absolute cents, clamped to 1500..13500 (about
+//           20 Hz .. 20 kHz) and to 0.45 x sample rate
+// q_cb      resonance in centibels above a flat response
+// With the cutoff at the top and no resonance the filter is switched off
+// (and its state cleared when it comes back on), which saves the biquad
+// in the sample loop for the many sounds that never filter. Coefficients
+// are only recomputed when the cutoff moves by more than 0.2% or Q by
+// 1 cB or more, so a static filter costs almost nothing per block.
 static void FS_RAM_FUNC(filter_update)(FsVoice *v, float fc_cents, float q_cb, float sample_rate) {
     float fc_hz = fs_abs_cents_to_hz(fs_clampf(fc_cents, 1500.0f, 13500.0f));
     const float nyq_limit = 0.45f * sample_rate;
@@ -271,6 +328,9 @@ static void FS_RAM_FUNC(filter_update)(FsVoice *v, float fc_cents, float q_cb, f
 // Voice lifecycle
 // ---------------------------------------------------------------------------
 
+// See fs_voice.h. The keynum and velocity generators, if set, replace the
+// played key and velocity for modulators and key scaling (mkey, mvel); the
+// voice still answers to the played key for note-off.
 void FS_RAM_FUNC(fs_voice_start)(FsVoice *v, const FsFont *font, const FsRegion *region,
                     const FsChannel *ch, uint8_t channel, uint8_t key, uint8_t vel,
                     float sample_rate, uint32_t serial) {
@@ -340,6 +400,7 @@ void FS_RAM_FUNC(fs_voice_start)(FsVoice *v, const FsFont *font, const FsRegion 
     v->last_r = 0.0f;
 }
 
+// See fs_voice.h.
 void FS_RAM_FUNC(fs_voice_release)(FsVoice *v) {
     if (v->state == FS_VOICE_RELEASED || v->state == FS_VOICE_FREE) return;
     v->state = FS_VOICE_RELEASED;
@@ -348,6 +409,8 @@ void FS_RAM_FUNC(fs_voice_release)(FsVoice *v) {
     if (v->loop_mode == FS_LOOP_UNTIL_RELEASE) fs_stream_stop_looping(&v->stream);
 }
 
+// See fs_voice.h. Caps the release time at FS_KILL_RELEASE_SEC; unlike a
+// note-off it leaves the sample looping, since the voice ends soon anyway.
 void FS_RAM_FUNC(fs_voice_kill)(FsVoice *v, float sample_rate) {
     if (v->state == FS_VOICE_FREE) return;
     const uint32_t fast = (uint32_t)(FS_KILL_RELEASE_SEC * sample_rate);
@@ -432,6 +495,17 @@ static inline __attribute__((always_inline)) float render_samples(
     return x;
 }
 
+// See fs_voice.h. Per block:
+//  1. re-evaluate modulators if the channel changed
+//  2. advance LFOs and envelopes by one block
+//  3. pitch -> 32.32 fixed point playback increment
+//  4. filter coefficients
+//  5. target amplitude for the end of the block
+//  6. make sure the stream ring holds every frame the block will read
+//  7. run the sample loop, picking the specialisation for filter/sends
+//  8. decide whether the voice has finished
+// The modulation envelope value used is the one from the start of the
+// block (read before advancing), the volume envelope the one at the end.
 bool FS_RAM_FUNC(fs_voice_render)(FsVoice *v, const FsChannel *ch, const FsBuses *buses, float sample_rate) {
     if (v->chan_serial != ch->serial) {
         float sum[FS_GEN_COUNT];

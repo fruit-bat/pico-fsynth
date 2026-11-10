@@ -6,6 +6,8 @@
 #   sf2conv   .sf2 -> .fsf font compiler (font reader only)
 #   fsfinfo   lists the contents of a .fsf (font reader only)
 #   fsrender  renders a MIDI file to WAV with the full synth core
+#   fsspeak   speaks English text or phonemes into a WAV (core/fs_speech.c);
+#             host/get_cmudict.sh fetches the dictionary text input needs
 # The core is split into two libraries so the font tools do not pull in
 # the synth. fs_config.h defaults apply; override with -D options as on
 # the device.
@@ -50,6 +52,7 @@ add_library(fs_core_synth STATIC
     ${FS_CORE_DIR}/fs_effects.c
     ${FS_CORE_DIR}/fs_synth.c
     ${FS_CORE_DIR}/fs_smf.c
+    ${FS_CORE_DIR}/fs_speech.c
 )
 target_link_libraries(fs_core_synth PUBLIC fs_core_font m)
 
@@ -57,6 +60,9 @@ target_link_libraries(fs_core_synth PUBLIC fs_core_font m)
 add_executable(fsrender fsrender.c)
 find_package(Threads REQUIRED)
 target_link_libraries(fsrender fs_core_synth Threads::Threads)
+
+add_executable(fsspeak fsspeak.c fs_text.c)
+target_link_libraries(fsspeak fs_core_synth)
 
 add_executable(sf2conv sf2conv.c)
 target_link_libraries(sf2conv fs_core_font)

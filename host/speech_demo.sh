@@ -24,7 +24,7 @@ say sentences -t "The birch canoe slid on the smooth planks. Glue the sheet to t
 It's easy to tell the depth of a well. Four hours of steady work faced us."
 say numbers -t "Please call 0 1 2 3, extension 4,567, before 9 o'clock."
 say slow -s 0.75 -t "This is the same voice, speaking more slowly."
-say fast -s 1.5 -t "And this is the same voice, speaking rather quickly."
+say fast -s 1.7 -t "And this is the same voice, speaking rather quickly."
 say high -p 190 -f 1.15 -t "With the formants raised and a higher pitch, the voice sounds younger."
 say low -p 80 -f 0.92 -t "And with them lowered, it sounds bigger."
 say question -t "Did you know that it can ask questions? It can."

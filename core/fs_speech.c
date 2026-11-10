@@ -439,8 +439,22 @@ static bool is_name(const PhonDef *d, const char *name) {
 //   - stops after S are not aspirated ("spin", "stop", "skin"),
 //   - T and D between a vowel and an unstressed vowel are a quick voiced
 //     tap, the American flap ("butter", "ladder", "steady"),
-//   - voiceless stops before a pause are released more softly.
-static void allophones(int n) {
+//   - voiceless stops before a pause are released more softly,
+//   - D between N or L and another consonant is dropped, as speakers
+//     almost always do ("and this" -> "an' this", "old man" -> "ol' man");
+//     said in full, its closure is a gap that splits the words apart.
+// Returns the new number of phonemes.
+static int allophones(int n) {
+    int m = 0;
+    for (int i = 0; i < n; ++i) {
+        const PhonDef *d = phones[i].def;
+        if (i > 0 && i + 1 < n && is_name(d, "D") && phones[i].note < 0 && phones[i].len_ms <= 0 &&
+            (is_name(phones[i - 1].def, "N") || is_name(phones[i - 1].def, "L")) &&
+            !(phones[i + 1].def->flags & (PH_VOWEL | PH_PAUSE | PH_APPROX))) continue;
+        phones[m++] = phones[i];
+        if (phones[m - 1].def == &phones[i].own) phones[m - 1].def = &phones[m - 1].own;
+    }
+    n = m;
     for (int i = 1; i < n; ++i) {
         const PhonDef *d = phones[i].def;
         const PhonDef *prev = phones[i - 1].def;
@@ -472,12 +486,22 @@ static void allophones(int n) {
             a->vot = 30;
         }
     }
+    return n;
 }
 
+// How the speaking rate changes timing. Talking faster mostly shortens
+// the stretchable part of each sound (vowels most of all, and pauses);
+// the minimum duration of a sound, and its fast events (bursts,
+// aspiration, formant glides), shrink much less, because they carry the
+// sound's identity. Both shrink by the square root of the speed: with
+// everything scaled by the speed, -s 2 was close to unintelligible.
+static float speed_art(float speed) { return sqrtf(speed); }
+
 // Durations in ms by a reduced set of Klatt's rules:
-//   dur = min + (inherent - min) * percent
+//   dur = min / sqrt(speed) + (inherent - min) * percent / speed
 // with the percent shortened for unstressed vowels and consonant clusters
 // and lengthened at the end of a phrase.
+
 static void durations(int n, float speed, float rate) {
     for (int i = 0; i < n; ++i) {
         const PhonDef *d = phones[i].def;
@@ -519,8 +543,7 @@ static void durations(int n, float speed, float rate) {
             const bool final = j >= n || is_phrase_end(phones[j].def);
             pct *= final ? k : 0.7f + 0.3f * k;
         }
-        const float ms = d->min_dur + (d->dur - d->min_dur) * pct;
-        phones[i].dur = ms * rate / 1000.0f / speed;
+        phones[i].dur = (d->min_dur / speed_art(speed) + (d->dur - d->min_dur) * pct / speed) * rate / 1000.0f;
     }
 
     // Sung lengths: a syllable's length covers its vowel and the
@@ -538,7 +561,7 @@ static void durations(int n, float speed, float rate) {
         for (int j = i + 1; j < n && !(phones[j].def->flags & (PH_VOWEL | PH_PAUSE)); ++j) {
             const PhonDef *c = phones[j].def;
             cons += phones[j].dur;
-            if (c->flags & PH_STOP) cons += (c->burst + c->vot) * rate / 1000.0f / speed;
+            if (c->flags & PH_STOP) cons += (c->burst + c->vot) * rate / 1000.0f / speed_art(speed);
         }
         phones[i].dur = fmaxf(len - cons, 0.4f * len);
     }
@@ -570,7 +593,7 @@ static void boundary(const TractSeg *a, const TractSeg *b, int p, float ms,
 
 // Build the tract track from the formant segments
 static void build_tract(FsSpeech *sp, int n) {
-    const float ms = sp->rate / 1000.0f / sp->voice.speed;
+    const float ms = sp->rate / 1000.0f / speed_art(sp->voice.speed);
     FsSpeechTrack *tr = &sp->tract;
     float bval[FS_SPEECH_MAX_PHONEMES + 2][FS_SP_TRACT_COUNT];
     float tl[FS_SPEECH_MAX_PHONEMES + 2], trr[FS_SPEECH_MAX_PHONEMES + 2];
@@ -785,9 +808,9 @@ int fs_speech_say(FsSpeech *sp, const char *str) {
     for (int i = 0; i < n; ++i) if (phones[i].note >= 0 || phones[i].len_ms > 0) sung = true;
 
     const float rate = sp->rate;
-    const float ms = rate / 1000.0f / sp->voice.speed;
+    const float ms = rate / 1000.0f / speed_art(sp->voice.speed);
     const float fscale = sp->voice.formant_scale;
-    allophones(n);
+    n = allophones(n);
     durations(n, sp->voice.speed, rate);
 
     // Formant and source segments

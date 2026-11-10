@@ -131,13 +131,46 @@ TEST(length_and_speed) {
     fs_speech_init(&sp, RATE);
     sp.voice.speed = 2.0f;
     fs_speech_say(&sp, "S EH1 V AH0 N T IY0 S EH1 V AH0 N");
-    CHECK_NEAR((double)fs_speech_length(&sp) / normal, 0.5, 0.02);
+    const double ratio = (double)fs_speech_length(&sp) / normal;
+    CHECK(ratio > 0.5 && ratio < 0.75);     // Vowels shrink fully, minimums less
+
+    // Vowels shrink more than consonants: a long vowel nearly halves, a
+    // run of stops much less
+    fs_speech_init(&sp, RATE);
+    fs_speech_say(&sp, "AA1 AA1 AA1 AA1");
+    const double v1 = fs_speech_length(&sp);
+    fs_speech_init(&sp, RATE);
+    sp.voice.speed = 2.0f;
+    fs_speech_say(&sp, "AA1 AA1 AA1 AA1");
+    const double v2 = fs_speech_length(&sp);
+    fs_speech_init(&sp, RATE);
+    fs_speech_say(&sp, "P T K P T K");
+    const double c1 = fs_speech_length(&sp);
+    fs_speech_init(&sp, RATE);
+    sp.voice.speed = 2.0f;
+    fs_speech_say(&sp, "P T K P T K");
+    const double c2 = fs_speech_length(&sp);
+    CHECK(v2 / v1 < c2 / c1);
 
     // Sung lengths add up: lead in (80 ms) + 500 + 300 rest + final pause (450)
     fs_speech_init(&sp, RATE);
     fs_speech_say(&sp, "AA1@60:500 _:300");
     CHECK_NEAR(fs_speech_length(&sp), (80 + 500 + 300 + 450) * RATE / 1000.0, RATE * 0.002);
     CHECK(fs_speech_busy(&sp));
+}
+
+TEST(d_dropped) {
+    // D between N and a consonant is not said ("and this"); before a
+    // vowel or R it is ("and I", "hundred")
+    fs_speech_init(&sp, RATE);
+    fs_speech_say(&sp, "AH0 N D DH IH1 S");
+    const uint32_t with_d = fs_speech_length(&sp);
+    fs_speech_say(&sp, "AH0 N DH IH1 S");
+    CHECK_EQ(with_d, fs_speech_length(&sp));
+    fs_speech_say(&sp, "AH0 N D R IH1 S");
+    const uint32_t keep = fs_speech_length(&sp);
+    fs_speech_say(&sp, "AH0 N R IH1 S");
+    CHECK(keep > fs_speech_length(&sp));
 }
 
 TEST(sung_pitch) {
@@ -248,6 +281,7 @@ int main(void) {
     RUN(every_phoneme_renders);
     RUN(deterministic);
     RUN(length_and_speed);
+    RUN(d_dropped);
     RUN(sung_pitch);
     RUN(spoken_pitch);
     RUN(question_rises);

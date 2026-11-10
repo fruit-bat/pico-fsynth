@@ -97,7 +97,7 @@ static const PhonDef phonemes[] = {
     // name flags                     rk dur min  formants             bandwidths        diphthong end        fnz  av  ah   af   hiss A / B / bypass                prop          ext int burst vot
     // Vowels
     { "AA", PH_VOWEL | PH_VOICED,      2, 240, 100, F3V(770, 1330, 2520), F3V(130, 70, 160), F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
-    { "AE", PH_VOWEL | PH_VOICED,      2, 230,  80, F3V(620, 1950, 2600), F3V(70, 130, 300), F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
+    { "AE", PH_VOWEL | PH_VOICED,      2, 230,  80, F3V(760, 1680, 2500), F3V(70, 130, 300), F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "AH", PH_VOWEL | PH_VOICED,      2, 140,  60, F3V(620, 1200, 2550), F3V(80, 50, 140),  F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "AO", PH_VOWEL | PH_VOICED,      2, 240, 100, F3V(650, 1000, 2540),  F3V(90, 100, 80),  F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "AW", PH_VOWEL | PH_VOICED,      2, 260, 100, F3V(720, 1350, 2500), F3V(80, 70, 140),  F3V(420, 940, 2350),  0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
@@ -105,7 +105,7 @@ static const PhonDef phonemes[] = {
     { "AY", PH_VOWEL | PH_VOICED,      2, 250, 150, F3V(700, 1250, 2550), F3V(100, 70, 200), F3V(400, 2050, 2600), 0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "EH", PH_VOWEL | PH_VOICED,      2, 150,  70, F3V(580, 1800, 2600), F3V(60, 90, 200),  F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "ER", PH_VOWEL | PH_VOICED,      2, 180,  80, F3V(470, 1380, 1710), F3V(100, 60, 110), F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
-    { "EY", PH_VOWEL | PH_VOICED,      2, 190,  70, F3V(480, 2090, 2690), F3V(70, 100, 200), F3V(350, 2300, 2850), 0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
+    { "EY", PH_VOWEL | PH_VOICED,      2, 190,  70, F3V(560, 1900, 2600), F3V(70, 100, 200), F3V(340, 2350, 2900), 0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "IH", PH_VOWEL | PH_VOICED,      2, 135,  40, F3V(430, 2030, 2680), F3V(50, 100, 140), F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "IY", PH_VOWEL | PH_VOICED,      2, 155,  55, F3V(340, 2320, 3000), F3V(45, 200, 400), F3V(0, 0, 0),         0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
     { "OW", PH_VOWEL | PH_VOICED,      2, 220,  80, F3V(520, 1000, 2460), F3V(80, 70, 70),   F3V(420, 880, 2400),  0,  0, OFF, OFF, HISS_NONE, F3V(50, 50, 50), 60, 60, 0, 0 },
@@ -140,7 +140,7 @@ static const PhonDef phonemes[] = {
     { "B",  PH_STOP | PH_VOICED,       8,  85,  60, F3V(200, 800, 2150), F3V(60, 110, 130), F3V(0, 0, 0),         0, -16, OFF, -16, 0, 0, OFF, 0, 0, OFF, 0,          F3V(30, 65, 80), 50, 10, 5, 5 },
     { "T",  PH_STOP,                   8,  75,  50, F3V(400, 1600, 2600), F3V(300, 120, 250), F3V(0, 0, 0),        0, OFF, -8,  -4, 4500, 2000, 0, 7000, 2500, -4, OFF, F3V(30, 45, 50), 50, 10, 15, 55 },
     { "D",  PH_STOP | PH_VOICED,       8,  75,  50, F3V(200, 1600, 2600), F3V(60, 100, 170), F3V(0, 0, 0),         0, -16, OFF, -12, 4500, 2000, 0, 7000, 2500, -4, OFF, F3V(30, 45, 50), 50, 10, 10, 8 },
-    { "K",  PH_STOP,                   8,  80,  60, F3V(300, 2300, 2100), F3V(250, 160, 330), F3V(0, 0, 0),        0, OFF, -8,  -8, 2200, 600, 0, 3300, 1200, -4, OFF,  F3V(30, 75, 50), 60, 10, 25, 60 },
+    { "K",  PH_STOP,                   8,  80,  60, F3V(300, 2300, 2100), F3V(250, 160, 330), F3V(0, 0, 0),        0, OFF, -8,   0, 2200, 600, 0, 3300, 1200, -4, OFF,  F3V(30, 75, 50), 60, 10, 25, 60 },
     { "G",  PH_STOP | PH_VOICED,       8,  80,  60, F3V(200, 2300, 2100), F3V(60, 150, 280), F3V(0, 0, 0),         0, -16, OFF, -16, 2200, 600, 0, 3300, 1200, -4, OFF,  F3V(30, 75, 50), 60, 10, 18, 10 },
     { "CH", PH_AFFRIC,                 8, 140, 100, F3V(300, 1840, 2750), F3V(200, 100, 300), F3V(0, 0, 0),        0, OFF, OFF,   0, 2700, 500,   0, 3800, 1200, -6, OFF, F3V(30, 40, 50), 50, 10, 0, 0 },
     { "JH", PH_AFFRIC | PH_VOICED,     8, 110,  70, F3V(220, 1840, 2750), F3V(60, 90, 300),  F3V(0, 0, 0),         0, -8, OFF,  -6, 2700, 500,   0, 3800, 1200, -6, OFF, F3V(30, 40, 50), 50, 10, 0, 0 },
@@ -349,6 +349,47 @@ static void source_values(const PhonDef *d, float *v, float level) {
     v[FS_SP_BYPASS] = db_to_amp(d->bypass);
 }
 
+// The aspiration of p t k before r l w: the air rushes through the
+// approximant's narrow channel, so the start of the r ("pray", "cry",
+// "truck" - after t almost "chr"), l ("play", "clay") or w ("twin",
+// "queen") is a voiceless hiss. Plain breath through r's low formants is
+// too weak and dull to carry the stop, and "truck" was heard as "rock".
+// D before r gets voiced friction the same way ("drain", nearly "jrain").
+static bool is_name(const PhonDef *d, const char *name);
+static void approx_friction(const PhonDef *a, const PhonDef *stop, float *v) {
+    float af = -4, fa, ba, fb, bb, gb = -6;
+    if (is_name(a, "R")) {
+        if (is_name(stop, "D")) {
+            // "dr": voiced friction, like the start of "j"
+            v[FS_SP_AV] = db_to_amp(-8);
+            af = -6;
+            fa = 2700; ba = 600; fb = 3800; bb = 1200;
+        } else if (is_name(stop, "T")) {
+            af = 6;         // As strong as sh
+            fa = 2700; ba = 600; fb = 3800; bb = 1200;
+        } else {
+            fa = 1800; ba = 700; fb = 3000; bb = 1500; gb = -10;
+        }
+    } else if (is_name(a, "L")) {
+        af -= 4;
+        fa = 3000; ba = 2500; fb = 6000; bb = 3000; gb = -10;
+    } else if (is_name(a, "W")) {
+        af -= 4;
+        fa = 1200; ba = 800; fb = 2400; bb = 1500; gb = -12;
+    } else {
+        return;     // y: plain aspiration ("cute")
+    }
+    v[FS_SP_AF] = db_to_amp(af);
+    v[FS_SP_AH] *= db_to_amp(-10);      // The friction, not the breath, dominates
+    v[FS_SP_FA] = fa;
+    v[FS_SP_BA] = ba;
+    v[FS_SP_GA] = 1.0f;
+    v[FS_SP_FB] = fb;
+    v[FS_SP_BB] = bb;
+    v[FS_SP_GB] = db_to_amp(gb);
+    v[FS_SP_BYPASS] = 0;
+}
+
 // Parse a decimal number at *p (advancing it); -1 if there is none
 static long parse_number(const char **p, const char *end) {
     if (*p >= end || !isdigit((unsigned char)**p)) return -1;
@@ -440,6 +481,8 @@ static bool is_name(const PhonDef *d, const char *name) {
 //   - T and D between a vowel and an unstressed vowel are a quick voiced
 //     tap, the American flap ("butter", "ladder", "steady"),
 //   - voiceless stops before a pause are released more softly,
+//   - a stop before another stop is not released ("lapped", "act"),
+//   - p t k before r l w: the voice starts later ("truck", "play"),
 //   - D between N or L and another consonant is dropped, as speakers
 //     almost always do ("and this" -> "an' this", "old man" -> "ol' man");
 //     said in full, its closure is a gap that splits the words apart.
@@ -471,6 +514,15 @@ static int allophones(int n) {
             a->vot = 10;
             a->dur = 60;
             a->min_dur = 40;
+        } else if ((d->flags & PH_STOP) && !(d->flags & PH_VOICED) && next && (next->flags & PH_APPROX) &&
+                   !is_name(next, "Y")) {
+            // Before r l w the air takes longer to get through, so the
+            // voice starts later: with the plain delay "tr" sounds "dr"
+            PhonDef *a = allophone(i);
+            a->vot += 25;
+        } else if (is_name(d, "D") && next && is_name(next, "R")) {
+            PhonDef *a = allophone(i);
+            a->vot += 15;           // Voiced friction before the r ("drain")
         } else if ((is_name(d, "T") || is_name(d, "D")) && next_vowel && phones[i + 1].stress == 0 &&
                    ((prev->flags & PH_VOWEL) || is_name(prev, "R"))) {
             PhonDef *a = allophone(i);
@@ -481,9 +533,16 @@ static int allophones(int n) {
             a->vot = 0;
             a->dur = a->min_dur = 25;
             a->f[0] = 300;
+        } else if ((d->flags & PH_STOP) && next && (next->flags & (PH_STOP | PH_AFFRIC))) {
+            // A stop before another stop is held, not released: one long
+            // closure, then the second stop's burst ("lapped", "act")
+            PhonDef *a = allophone(i);
+            a->burst = 0;
+            a->vot = 0;
         } else if ((d->flags & PH_STOP) && !(d->flags & PH_VOICED) && next && (next->flags & PH_PAUSE)) {
             PhonDef *a = allophone(i);
             a->vot = 30;
+            a->af -= 6;
         }
     }
     return n;
@@ -771,13 +830,13 @@ static void build_pitch(FsSpeech *sp, int n) {
 void fs_speech_init(FsSpeech *sp, float sample_rate) {
     memset(sp, 0, sizeof(*sp));
     sp->rate = sample_rate;
-    sp->voice.pitch_hz = 110.0f;
+    sp->voice.pitch_hz = 80.0f;
     sp->voice.speed = 1.0f;
     sp->voice.formant_scale = 1.0f;
     sp->voice.accent = 0.3f;
     sp->voice.breathiness = 0.5f;
     sp->voice.brightness = 0.5f;
-    sp->voice.gain = 1.0f;
+    sp->voice.gain = 0.85f;
     sp->voice.vibrato = 0.3f;
     sp->voice.vibrato_hz = 5.5f;
     sp->noise = 0x12345678u;
@@ -845,10 +904,34 @@ int fs_speech_say(FsSpeech *sp, const char *str) {
             ss->ramp = 1 * ms;
             if (!d->fa) ss->v[FS_SP_BYPASS] = 1.0f;      // Labial: flat burst
             if (d->fa && d->fa < 3000) {
-                // Velar: the burst sits just above the next vowel's F2
+                // Velar: the burst sits just above the F2 of the vowel it
+                // is made against: the next one, or with none (the end
+                // of "tuck") the one before. Before r or w (rounded and
+                // pulled back) it is lower. A fixed high burst sounds
+                // like "ch".
                 const PhonDef *nx = i + 1 < n ? phones[i + 1].def : d;
-                float f = (nx->flags & PH_VOWEL ? nx->f[1] : d->f[1]) * fscale + 200.0f;
-                ss->v[FS_SP_FA] = fminf(fmaxf(f, 1500.0f), 3200.0f);
+                const PhonDef *pv = i > 0 ? phones[i - 1].def : d;
+                float f = d->f[1];
+                if (nx->flags & PH_VOWEL) f = nx->f[1];
+                else if (pv->flags & PH_VOWEL) f = pv->f_end[1] ? pv->f_end[1] : pv->f[1];
+                f = f * fscale + 200.0f;
+                if (is_name(nx, "R") || is_name(nx, "W")) f = 1700.0f * fscale;
+                f = fminf(fmaxf(f, 1300.0f), 3200.0f);
+                ss->v[FS_SP_FA] = f;
+                ss->v[FS_SP_FB] = f + 1100.0f;
+            }
+            if ((is_name(d, "T") || is_name(d, "D")) && i + 1 < n && is_name(phones[i + 1].def, "R")) {
+                // Before r the tongue is already drawn back: the release
+                // is a strong "sh" like burst, "tr" nearly "chr" and "dr"
+                // nearly "jr"
+                ss->v[FS_SP_AF] = db_to_amp(is_name(d, "T") ? 6 : 0);
+                ss->v[FS_SP_FA] = 2700;
+                ss->v[FS_SP_BA] = 600;
+                ss->v[FS_SP_GA] = 1.0f;
+                ss->v[FS_SP_FB] = 3800;
+                ss->v[FS_SP_BB] = 1200;
+                ss->v[FS_SP_GB] = db_to_amp(-6);
+                ss->v[FS_SP_BYPASS] = 0;
             }
             t_src = ss->end;
             // Aspiration (long for p t k) or the onset of voicing
@@ -859,6 +942,9 @@ int fs_speech_say(FsSpeech *sp, const char *str) {
             ss->v[FS_SP_AF] = 0;
             ss->v[FS_SP_AV] = 0;
             ss->ramp = 2 * ms;
+            if (i + 1 < n && (phones[i + 1].def->flags & PH_APPROX) &&
+                (!(d->flags & PH_VOICED) || (is_name(d, "D") && is_name(phones[i + 1].def, "R"))))
+                approx_friction(phones[i + 1].def, d, ss->v);
             t_src = ss->end;
             continue;
         }

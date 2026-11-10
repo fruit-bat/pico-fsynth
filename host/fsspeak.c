@@ -9,7 +9,7 @@
 //   -d path    pronouncing dictionary for -t (default: cmudict.dict next
 //              to this program; host/get_cmudict.sh downloads it)
 //   -v         print the phonemes
-//   -p hz      base pitch (default 110)
+//   -p hz      base pitch (default 80)
 //   -s speed   speaking rate, 1 = normal
 //   -f scale   formant scale: 1 = adult male, about 1.15 = female
 //   -a accent  pitch accent on stressed vowels (default 0.3 = +30%)
@@ -17,7 +17,7 @@
 //   -T bright  voice brightness 0.1..1 (default 0.5)
 //   -V semis   singing vibrato depth (default 0.3 semitones)
 //   -r rate    sample rate (default 44100)
-//   -g gain    output gain (default 1)
+//   -g gain    output gain (default 0.85)
 //
 // Examples:
 //   fsspeak -t "Hello, world." hello.wav

@@ -63,7 +63,7 @@ the full list is in `core/fs_speech.h`. To sing, give a vowel a MIDI note
 and a length in ms (`AA1@60:400`), and a rest a length (`_:200`). Notes are
 held with vibrato and glide briefly into each other.
 
-`fsspeak` options: `-t` text input, `-v` print the phonemes, `-p` pitch (Hz),
+`fsspeak` options: `-t` text input, `-v` print the phonemes, `-p` pitch (Hz, default 80),
 `-s` speed, `-f` formant scale (1.15 sounds younger / female), `-a` pitch
 accent, `-b` breathiness, `-T` brightness, `-V` vibrato depth (semitones),
 `-g` gain.
@@ -90,7 +90,7 @@ ctest --test-dir build-host-asan --output-on-failure
 | `smf` | MIDI file player: timing, tempo, running status, SysEx, truncated files |
 | `stream` | sample streamer: loop unrolling, end of sample, loop until release |
 | `synth` | font reader checks, pitch, note on/off, sustain, layers, exclusive class, voice stealing, split render |
-| `speech` | speech synthesizer: phoneme parsing, timing, spoken and sung pitch, vowel and fricative spectra, voicing |
+| `speech` | speech synthesizer: phoneme parsing, timing, allophone rules (dropped d, stop clusters), spoken and sung pitch, vowel and fricative spectra, voicing |
 | `text` | text to phonemes (`host/fs_text.c`): dictionary, numbers, spelling out, de-stressing |
 | `midi_parse` | firmware UART / USB MIDI parsers and SysEx recognition (`firmware/midi_parse.c`) |
 | `tools` | runs `sf2conv` and `fsrender` on generated SoundFonts and MIDI files |

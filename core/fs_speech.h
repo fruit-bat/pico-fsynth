@@ -127,14 +127,14 @@ typedef struct {
 
 // Voice settings; change between fs_speech_init and fs_speech_say
 typedef struct {
-    float pitch_hz;                 // Base pitch (110 = a low male voice)
+    float pitch_hz;                 // Base pitch (80 = a deep male voice, the clearest)
     float speed;                    // Speaking rate: 1 normal; 2 halves the stretchable
                                     // part of each sound, its minimum by 1/sqrt(2)
     float formant_scale;            // 1 = adult male; about 1.15 sounds female
     float accent;                   // Pitch accent on stressed vowels: 0.2 = +20%
     float breathiness;              // Breath noise mixed into voicing: 0..1
     float brightness;               // Voice source brightness: 0.1 dull .. 1 bright
-    float gain;                     // Output level
+    float gain;                     // Output level (0.85 leaves headroom for loud consonants)
     float vibrato;                  // Singing: vibrato depth, semitones
     float vibrato_hz;               // Singing: vibrato rate
 } FsSpeechVoice;

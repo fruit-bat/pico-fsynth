@@ -173,6 +173,43 @@ TEST(d_dropped) {
     CHECK(keep > fs_speech_length(&sp));
 }
 
+// Where the sound starts after the lead in silence (first sample above
+// a small level)
+static int onset(int n) {
+    for (int i = 0; i < n; ++i) if (fabsf(wav[i]) > 0.01f) return i;
+    return n;
+}
+
+// The number of times sound starts after at least 10 ms of silence
+static int onsets(int n) {
+    const int blk = RATE / 500;        // 2 ms
+    int count = 0, quiet = 5;
+    for (int i = 0; i + blk <= n; i += blk) {
+        const bool loud = rms(i, blk) > 0.003;
+        if (loud && quiet >= 5) ++count;
+        quiet = loud ? 0 : quiet + 1;
+    }
+    return count;
+}
+
+TEST(stop_clusters) {
+    // The aspiration of t before r is a hiss ("truck", nearly "chruck"),
+    // most of its energy above 2 kHz, not breath through r's low formants
+    int n = say("T R AA1");
+    int at = onset(n) + RATE * 20 / 1000;
+    CHECK(band_energy(at, RATE * 30 / 1000, 2000, 5000) > 2 * band_energy(at, RATE * 30 / 1000, 100, 1500));
+    n = say("K R AA1");
+    at = onset(n) + RATE * 30 / 1000;
+    CHECK(band_energy(at, RATE * 20 / 1000, 1200, 5000) > band_energy(at, RATE * 20 / 1000, 100, 1100));
+
+    // A stop before a stop is not released: "apt" has a vowel and one
+    // burst, where "a pa ta" would have the p's burst too
+    n = say("AA1 P T AA1");
+    CHECK_EQ(onsets(n), 2);
+    n = say("AA1 P AA1");
+    CHECK_EQ(onsets(n), 2);
+}
+
 TEST(sung_pitch) {
     // 0.5 s into a 1.5 s note, after the glide
     say("AA1@69:1500");
@@ -192,7 +229,7 @@ TEST(spoken_pitch) {
     fs_speech_init(&sp, RATE);
     say("AA1");
     const double f = pitch(RATE * 15 / 100, 1024);
-    CHECK(f > 110 * 0.75 && f < 110 * 1.45);
+    CHECK(f > 80 * 0.75 && f < 80 * 1.45);
 
     fs_speech_init(&sp, RATE);
     sp.voice.pitch_hz = 200;
@@ -282,6 +319,7 @@ int main(void) {
     RUN(deterministic);
     RUN(length_and_speed);
     RUN(d_dropped);
+    RUN(stop_clusters);
     RUN(sung_pitch);
     RUN(spoken_pitch);
     RUN(question_rises);

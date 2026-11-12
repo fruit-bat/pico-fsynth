@@ -6,7 +6,7 @@ SoundFont 2 MIDI synthesizer for the RP2350 (target: Waveshare RP2350-Plus, 16 M
 
 - `core/` portable synth: font reader, voices, effects, MIDI file player
 - `firmware/` RP2350 specific: audio output (I2S / PWM), MIDI input (UART / USB), main
-- `host/` PC tools: font converter, font inspector, MIDI to WAV renderer, test scripts
+- `host/` PC tools: font converter, font inspector, MIDI to WAV renderer, speech renderer, test scripts
 - `tests/` automated tests of the core, the firmware's MIDI parsers and the host tools
 
 ## Fonts
@@ -40,6 +40,37 @@ python3 host/compare_wav.py out.wav ref.wav                          # level / e
 host/render_compare.sh [more.mid ...]   # every test file -> build-host/test/NAME.fsynth.wav + NAME.fluid.wav
 ```
 
+## Speech and singing (PC only so far)
+
+`core/fs_speech.c` is a formant speech synthesizer in the style of Klatt's
+(the design DECtalk used), rather than a player of recorded sounds like the
+old SP0256: glottal pulses and noise go through resonators that model the
+mouth, and every phoneme is a set of targets that the synthesizer glides
+between. The pitch is free, so the same voice can speak or sing.
+`host/fsspeak` renders it to a WAV:
+
+```sh
+host/get_cmudict.sh                       # once: the CMU pronouncing dictionary (BSD, 3.5 MB)
+./build-host/fsspeak -t "Hello, world. Can you understand me?" hello.wav
+./build-host/fsspeak "HH AH0 L OW1 , W ER1 L D ." hello.wav          # phonemes (ARPAbet)
+./build-host/fsspeak "T W IH1@60:400 NG K AH0@60:400 L S T AA1@67:800 R" sing.wav
+host/speech_demo.sh                       # examples -> build-host/speech-demo/*.wav
+```
+
+Phonemes are ARPAbet, as in the CMU dictionary, with a stress digit on
+vowels (1 stressed, 0 unstressed) and `, . ? !` for pauses and intonation;
+the full list is in `core/fs_speech.h`. To sing, give a vowel a MIDI note
+and a length in ms (`AA1@60:400`), and a rest a length (`_:200`). Notes are
+held with vibrato and glide briefly into each other.
+
+`fsspeak` options: `-t` text input, `-v` print the phonemes, `-p` pitch (Hz, default 80),
+`-s` speed, `-f` formant scale (1.15 sounds younger / female), `-a` pitch
+accent, `-b` breathiness, `-T` brightness, `-V` vibrato depth (semitones),
+`-g` gain.
+
+With `-t`, words not in the dictionary are spelled out, numbers are read
+out, and short function words ("the", "of", "to") lose their stress.
+
 ## Tests
 
 The host build also builds the test suite in `tests/` (plain C, run by CTest):
@@ -59,6 +90,8 @@ ctest --test-dir build-host-asan --output-on-failure
 | `smf` | MIDI file player: timing, tempo, running status, SysEx, truncated files |
 | `stream` | sample streamer: loop unrolling, end of sample, loop until release |
 | `synth` | font reader checks, pitch, note on/off, sustain, layers, exclusive class, voice stealing, split render |
+| `speech` | speech synthesizer: phoneme parsing, timing, allophone rules (dropped d, stop clusters), spoken and sung pitch, vowel and fricative spectra, voicing |
+| `text` | text to phonemes (`host/fs_text.c`): dictionary, numbers, spelling out, de-stressing |
 | `midi_parse` | firmware UART / USB MIDI parsers and SysEx recognition (`firmware/midi_parse.c`) |
 | `tools` | runs `sf2conv` and `fsrender` on generated SoundFonts and MIDI files |
 

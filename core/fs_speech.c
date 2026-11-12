@@ -691,6 +691,11 @@ static void build_tract(FsSpeech *sp, int n) {
             track_add(tr, s->start + tin, v, FS_SP_TRACT_COUNT);
         } else {
             track_add(tr, s->start + tin, in_v, FS_SP_TRACT_COUNT);
+            // A diphthong holds its first quality for a while before it
+            // glides: otherwise, after a long glide in (the r of
+            // "train"), the start is passed in an instant and "ay" is
+            // heard as "ee"
+            if (s->def->f_end[0]) track_add(tr, s->start + tin + 0.35f * (len - tin - tout), in_v, FS_SP_TRACT_COUNT);
             track_add(tr, s->end - tout, out_v, FS_SP_TRACT_COUNT);
         }
         if (i + 1 < n) track_add(tr, s->end, bval[i], FS_SP_TRACT_COUNT);

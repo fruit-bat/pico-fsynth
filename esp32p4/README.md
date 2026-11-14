@@ -109,12 +109,60 @@ to GND, FMT low and XSMT high.
 
 ## MIDI in
 
-UART MIDI at 31250 baud on GPIO20 (physical pin 35). It needs the usual
-opto-isolator circuit, as on the Pico. USB MIDI is not ported yet.
+- **UART MIDI** at 31250 baud on GPIO20 (physical pin 35). It needs the
+  usual opto-isolator circuit, as on the Pico.
+- **Serial MIDI over the Type-C port**, at 115200 baud, alongside the
+  console. Typed text is plain ASCII, so the firmware takes any byte of 0x80
+  or above as a MIDI status byte and reads the rest of the message after
+  it. Senders must not use running status: every message must start with
+  its status byte.
+- **USB MIDI** on the high-speed USB port: the 4-pin V / D- / D+ / G header
+  at the bottom of the P4-Pico, not the Type-C. It appears as
+  "pico-fsynth", with the same VID/PID as the Pico, so the `host/*.sh` SysEx
+  scripts find it. The USB code is Espressif's `esp_tinyusb` component,
+  which the build downloads (see `main/idf_component.yml`). Turn it off with
+  "USB MIDI device" in menuconfig.
+
+`host/serial_midi` (built with the host tools when the ALSA development
+files are installed, `libasound2-dev`) bridges an ALSA MIDI port to the
+serial port. Run it in its own terminal and leave it running:
+
+```sh
+./build-host/serial_midi                 # or: serial_midi -b 115200 /dev/ttyUSB0
+aplaymidi -p fsynth-serial song.mid      # in another terminal
+aconnect 'My Keyboard' fsynth-serial     # or connect a keyboard / DAW
+```
+
+The `fsynth-serial` port exists only while `serial_midi` runs. If it is not
+running, `aplaymidi` reports "Invalid port fsynth-serial".
+
+It shows the board's status lines, and lines you type are sent to the board
+as console commands. It does not reset the board when it starts. Close
+`idf.py monitor` first: only one program can have the port open.
+
+The `host/*.sh` SysEx scripts use `amidi`, which needs a raw MIDI device
+rather than a sequencer port. The `snd-virmidi` kernel module provides one:
+
+```sh
+sudo modprobe snd-virmidi                # adds "Virtual Raw MIDI" devices
+amidi -l                                 # find one, e.g. hw:3,0
+aconnect 'Virtual Raw MIDI 3-0' fsynth-serial
+host/master_volume.sh 50 hw:3,0
+host/settings.sh save hw:3,0
+```
+
+## Settings
+
+Master volume and EQ are saved in NVS, in the `nvs` partition, by the same
+SysEx as on the Pico (`host/settings.sh save|erase`), and loaded at boot.
+The status line shows them, and the boot log says whether saved settings
+were loaded. A save holds up rendering for a few milliseconds while flash is
+written.
 
 ## Console commands
 
-For testing without MIDI hardware, type these in `idf.py monitor`:
+For testing without MIDI hardware, type these in `idf.py monitor` (or in
+`serial_midi`):
 
 | Command | What it does |
 |---|---|
@@ -128,21 +176,31 @@ For testing without MIDI hardware, type these in `idf.py monitor`:
 Measured on 2026-11-14 with `stress`: chip revision v1.3 at 360 MHz, both
 cores, font read from flash, TimGM6mb.
 
-| Voices | Fused multiply-add | Core 1 | Core 0 | Cycles per voice-sample |
-|---|---|---|---|---|
-| 80 | off | 61% | 56% | 108 |
-| 112 | off | 82% | 77% | 108 |
-| 112 | on (default) | 72% | 67% | 94 |
+| Voices | Fused multiply-add | Effects | Core 1 | Core 0 | Cycles per voice-sample |
+|---|---|---|---|---|---|
+| 80 | off | internal RAM | 61% | 56% | 108 |
+| 112 | off | internal RAM | 82% | 77% | 108 |
+| 112 | on | internal RAM | 72% | 67% | 94 |
+| 112 | on | PSRAM | 72% | 67% | 94 |
+| **128** (default) | on | PSRAM | 81% | 76% | 94 |
+| 144 | on | PSRAM | 91% | 85% | 94 |
 
-There were no underruns in any of these runs. All Sound Off with 112 voices
-playing briefly peaked at 85% (95% with fused multiply-add off).
+There were no underruns in any of these runs. All Sound Off briefly peaks
+higher: 85% at 112 voices, and 107% at 144, which the output buffers
+absorbed. That is why the default is 128.
 
-- 112 voices is a memory limit, not a CPU one. The synth state (mostly
-  2 KB of stream ring per voice) must fit in internal RAM, and 120 voices
-  does not link.
-- Reading samples from flash costs under 1 cycle per voice-sample, so
-  copying the font to PSRAM has little to gain.
+- **Voice limit:** each voice needs about 2 KB of stream ring in internal
+  RAM. With the reverb and chorus in internal RAM, 112 voices is the most
+  that links. Moving them to PSRAM (the default) frees 70 KB, enough for
+  144 voices, and costs no measurable time. 128 is then a CPU limit.
+- **USB MIDI cost:** about 9 KB of internal RAM (2.3 KB fixed at build
+  time, 6.8 KB allocated at boot) and 38 KB of flash. It makes no
+  measurable CPU difference with nothing plugged in: 81.4% / 76% at 128
+  voices with or without it. It has not yet been measured with a host
+  sending MIDI.
+- **Font in PSRAM:** reading samples from flash costs under 1 cycle per
+  voice-sample, so copying the font to PSRAM has little to gain.
 
 ## Not ported yet
 
-USB MIDI, saving settings (`host/settings.sh`), the micro benchmarks.
+The micro benchmarks.

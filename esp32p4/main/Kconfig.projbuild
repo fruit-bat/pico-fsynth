@@ -7,11 +7,12 @@ menu "pico-fsynth"
     config FSYNTH_MAX_VOICES
         int "Maximum simultaneous voices"
         range 1 248
-        default 112
+        default 128
         help
-            112 is the most that fits in internal RAM (the stream rings
-            are about 2 KB per voice). At 360 MHz with fused multiply-add
-            on, 112 sustained voices use about 72% of each core.
+            With the effects in PSRAM, 144 voices fit in internal RAM (the
+            stream rings are about 2 KB per voice), but the CPU limits it:
+            at 360 MHz with fused multiply-add, 128 sustained voices use
+            about 81% of each core and 144 about 91%.
 
     config FSYNTH_DUAL_CORE
         bool "Render voices on both cores"
@@ -24,6 +25,13 @@ menu "pico-fsynth"
             Off: the font is read in place from flash through the cache
             (memory mapped, like XIP on the Pico). On: it is copied into
             PSRAM at boot, which takes a second or two but may be faster.
+
+    config FSYNTH_EFFECTS_IN_PSRAM
+        bool "Put the reverb and chorus memory in PSRAM"
+        default y
+        help
+            Moves about 70 KB of effect delay lines out of internal RAM,
+            leaving room for more voices.
 
     config FSYNTH_FP_CONTRACT
         bool "Allow fused multiply-add in the synth core"
@@ -53,6 +61,13 @@ menu "pico-fsynth"
         default -1
         help
             PCM510x DACs make their own MCLK from BCK; leave at -1.
+
+    config FSYNTH_USB_MIDI
+        bool "USB MIDI device on the high-speed USB port"
+        default y
+        help
+            The 4-pin V / D- / D+ / G header on the P4-Pico. Needs
+            CONFIG_TINYUSB_MIDI_COUNT=1 (set in sdkconfig.defaults).
 
     config FSYNTH_MIDI_UART_RX_PIN
         int "MIDI in (UART RX) GPIO, -1 for none"

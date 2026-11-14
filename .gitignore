@@ -5,3 +5,4 @@ build-*/
 **/*.sf2
 __pycache__/
 sdkconfig.old
+managed_components/

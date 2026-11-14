@@ -24,3 +24,6 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # The render task is busy most of the time; it blocks only in the I2S write
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 CONFIG_FREERTOS_HZ=1000
+
+# USB MIDI on the high-speed port (main/usb_midi.c, FSYNTH_USB_MIDI)
+CONFIG_TINYUSB_MIDI_COUNT=1

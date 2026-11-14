@@ -104,11 +104,19 @@ typedef struct {
     float send_reverb[FS_BLOCK_SIZE];
     float send_chorus[FS_BLOCK_SIZE];
 
+    // Effect state: inline, or allocated by fs_synth_init when
+    // FS_EFFECTS_EXTERNAL (NULL if that failed; the effect is then skipped)
 #if FS_ENABLE_REVERB
-    FsReverb reverb;
+    FsReverb *reverb;
+#if !FS_EFFECTS_EXTERNAL
+    FsReverb reverb_mem;
+#endif
 #endif
 #if FS_ENABLE_CHORUS
-    FsChorus chorus;
+    FsChorus *chorus;
+#if !FS_EFFECTS_EXTERNAL
+    FsChorus chorus_mem;
+#endif
 #endif
 
     FsEq eq;                    // Master EQ (GS SysEx 40 02 0x)

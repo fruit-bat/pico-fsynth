@@ -235,17 +235,27 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
     memset(s->send_reverb, 0, sizeof(s->send_reverb));
     memset(s->send_chorus, 0, sizeof(s->send_chorus));
 #if FS_ENABLE_REVERB
-    fs_reverb_init(&s->reverb, s->sample_rate);
+#if FS_EFFECTS_EXTERNAL
+    if (!s->reverb) s->reverb = FS_EFFECTS_ALLOC(sizeof(FsReverb));  // Once; kept on re-init
+#else
+    s->reverb = &s->reverb_mem;
+#endif
+    if (s->reverb) fs_reverb_init(s->reverb, s->sample_rate);
 #endif
 #if FS_ENABLE_CHORUS
-    fs_chorus_init(&s->chorus, s->sample_rate);
+#if FS_EFFECTS_EXTERNAL
+    if (!s->chorus) s->chorus = FS_EFFECTS_ALLOC(sizeof(FsChorus));
+#else
+    s->chorus = &s->chorus_mem;
+#endif
+    if (s->chorus) fs_chorus_init(s->chorus, s->sample_rate);
 #endif
 }
 
 // See fs_synth.h. Clamps every value to 0..1.
 void fs_synth_set_reverb(FsSynth *s, float room, float damp, float width, float level) {
 #if FS_ENABLE_REVERB
-    fs_reverb_set(&s->reverb, fs_clampf(room, 0.0f, 1.0f), fs_clampf(damp, 0.0f, 1.0f),
+    if (s->reverb) fs_reverb_set(s->reverb, fs_clampf(room, 0.0f, 1.0f), fs_clampf(damp, 0.0f, 1.0f),
                   fs_clampf(width, 0.0f, 1.0f), fs_clampf(level, 0.0f, 1.0f));
 #else
     (void)s; (void)room; (void)damp; (void)width; (void)level;
@@ -272,7 +282,7 @@ void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value) {
 // See fs_synth.h. The base delay is fixed at 12 ms.
 void fs_synth_set_chorus(FsSynth *s, float rate_hz, float depth_ms, float level) {
 #if FS_ENABLE_CHORUS
-    fs_chorus_set(&s->chorus, s->sample_rate, fs_clampf(rate_hz, 0.01f, 10.0f), FS_CHORUS_DEFAULT_BASE,
+    if (s->chorus) fs_chorus_set(s->chorus, s->sample_rate, fs_clampf(rate_hz, 0.01f, 10.0f), FS_CHORUS_DEFAULT_BASE,
                   fs_clampf(depth_ms, 0.0f, 20.0f), fs_clampf(level, 0.0f, 4.0f));
 #else
     (void)s; (void)rate_hz; (void)depth_ms; (void)level;
@@ -526,10 +536,10 @@ void FS_RAM_FUNC(fs_synth_render_part)(FsSynth *s, uint32_t part) {
     const uint32_t t0 = FS_CYCLE_COUNT();
     if (part == 0) {
 #if FS_ENABLE_REVERB
-        if (reverb) fs_reverb_process(&s->reverb, s->send_reverb, s->bus_l[0], s->bus_r[0], B);
+        if (reverb && s->reverb) fs_reverb_process(s->reverb, s->send_reverb, s->bus_l[0], s->bus_r[0], B);
 #endif
 #if FS_ENABLE_CHORUS
-        if (chorus) fs_chorus_process(&s->chorus, s->send_chorus, s->bus_l[0], s->bus_r[0], B);
+        if (chorus && s->chorus) fs_chorus_process(s->chorus, s->send_chorus, s->bus_l[0], s->bus_r[0], B);
 #endif
     }
     const FsBuses buses = {

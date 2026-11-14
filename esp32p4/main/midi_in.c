@@ -1,8 +1,9 @@
 //
 // midi_in.c - MIDI input on the ESP32-P4: UART (DIN/TRS MIDI) parsed by
 // the shared firmware/midi_parse.c into a lock-free queue for the render
-// task. Implements firmware/midi_in.h, as the RP2350 firmware does. USB
-// MIDI is not implemented yet.
+// task. Implements firmware/midi_in.h, as the RP2350 firmware does, plus
+// raw MIDI from the serial console (midi_in_serial.h) and, with
+// FSYNTH_USB_MIDI, USB MIDI (usb_midi.c).
 //
 // midi_in_poll(), midi_in_inject() and midi_in_settings_cmd() run in the
 // main task (core 0); midi_in_pop() runs in the render task (core 1).
@@ -11,8 +12,12 @@
 #include "esp_attr.h"
 #include "driver/uart.h"
 #include "sdkconfig.h"
+#if CONFIG_FSYNTH_USB_MIDI
+#include "tusb.h"
+#endif
 
 #include "midi_in.h"
+#include "midi_in_serial.h"
 
 #define MIDI_UART UART_NUM_1
 #define MIDI_BAUD 31250
@@ -69,6 +74,10 @@ uint32_t midi_in_dropped(void) { return dropped; }
 // ---------------------------------------------------------------------------
 
 static MidiByteParser uart_parser;
+static MidiByteParser serial_parser;    // Console serial port
+#if CONFIG_FSYNTH_USB_MIDI
+static MidiUsbParser usb_parser;
+#endif
 static volatile uint8_t settings_cmd;   // Latest settings command, 0 = none
 static bool uart_ok;
 
@@ -94,6 +103,10 @@ static void on_message(void *ctx, const uint8_t *msg, uint8_t len) {
 // (-1 = no UART MIDI).
 void midi_in_init(void) {
     midi_byte_parser_init(&uart_parser, on_message, NULL);
+    midi_byte_parser_init(&serial_parser, on_message, NULL);
+#if CONFIG_FSYNTH_USB_MIDI
+    midi_usb_parser_init(&usb_parser, on_message, NULL);
+#endif
 #if CONFIG_FSYNTH_MIDI_UART_RX_PIN >= 0
     const uart_config_t cfg = {
         .baud_rate = MIDI_BAUD,
@@ -110,13 +123,26 @@ void midi_in_init(void) {
 #endif
 }
 
-// See midi_in.h. The driver buffers 512 bytes (160 ms of MIDI) in its
-// interrupt, so polling every millisecond or so is plenty.
+// See midi_in.h. The UART driver buffers 512 bytes (160 ms of MIDI) in
+// its interrupt, so polling every millisecond or so is plenty.
 void midi_in_poll(void) {
-    if (!uart_ok) return;
-    uint8_t buf[64];
-    int n;
-    while ((n = uart_read_bytes(MIDI_UART, buf, sizeof(buf), 0)) > 0) {
-        for (int i = 0; i < n; ++i) midi_parse_byte(&uart_parser, buf[i]);
+    if (uart_ok) {
+        uint8_t buf[64];
+        int n;
+        while ((n = uart_read_bytes(MIDI_UART, buf, sizeof(buf), 0)) > 0) {
+            for (int i = 0; i < n; ++i) midi_parse_byte(&uart_parser, buf[i]);
+        }
     }
+#if CONFIG_FSYNTH_USB_MIDI
+    // USB MIDI event packets, buffered by TinyUSB (its task, core 0)
+    uint8_t packet[4];
+    while (tud_midi_available() && tud_midi_packet_read(packet)) {
+        midi_parse_usb_packet(&usb_parser, packet);
+    }
+#endif
+}
+
+// See midi_in_serial.h.
+void midi_in_serial_byte(uint8_t b) {
+    midi_parse_byte(&serial_parser, b);
 }

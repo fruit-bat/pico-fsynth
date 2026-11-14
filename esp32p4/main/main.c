@@ -22,8 +22,15 @@
 // audio.
 //
 // A small serial command line (console.c) can hold test notes: type help.
+// The same serial port also takes raw MIDI (see console.c and
+// host/serial_midi.c).
 //
-// Not yet ported: USB MIDI, saving settings (NVS), the micro benchmarks.
+// Master volume and EQ are saved in NVS on request (settings.c, SysEx
+// F0 7D 46 53 01/02 F7, host/settings.sh) and loaded at start up.
+//
+// USB MIDI (FSYNTH_USB_MIDI) is on the high-speed USB port; see usb_midi.c.
+//
+// Not yet ported: the micro benchmarks.
 //
 #include <stdio.h>
 #include <string.h>
@@ -43,6 +50,10 @@
 #include "audio_i2s.h"
 #include "midi_in.h"
 #include "console.h"
+#include "settings.h"
+#if CONFIG_FSYNTH_USB_MIDI
+#include "usb_midi.h"
+#endif
 
 #ifdef CONFIG_FSYNTH_FP_CONTRACT
 #define FP_CONTRACT_LABEL "  [fused multiply-add on]"
@@ -276,11 +287,11 @@ static void print_status(float buffer_us) {
     const float peak = report_peak;
     const float peak_db = peak > 1e-6f ? 20.0f * log10f(peak) : -120.0f;
     const uint32_t clipped = synth.stats.clipped;
-    printf("cpu core1 %5.1f%% (max %5.1f%%) core0 %5.1f%%  voices max %2lu  underruns %lu  midi %lu (dropped %lu)  peak %4.0f dB  clipped %lu  volume %3.0f%%%s\n",
+    printf("cpu core1 %5.1f%% (max %5.1f%%) core0 %5.1f%%  voices max %2lu  underruns %lu  midi %lu (dropped %lu)  peak %4.0f dB  clipped %lu  volume %3.0f%%  eq %+.0f/%+.0f dB%s\n",
            (double)load, (double)load_max, (double)load0, (unsigned long)report_voices_max,
            (unsigned long)audio_underruns(), (unsigned long)midi_in_count(), (unsigned long)midi_in_dropped(),
            (double)peak_db, (unsigned long)(clipped - clipped_last), (double)(100.0f * synth.master_volume),
-           demo_playing ? "  [demo]" : "");
+           (double)synth.eq.low_db, (double)synth.eq.high_db, demo_playing ? "  [demo]" : "");
     clipped_last = clipped;
 
     // Where the time goes, from the parts rendered by the helper (part 0
@@ -310,6 +321,9 @@ void app_main(void) {
     esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_EXACT, &cpu_hz);
     midi_budget_cycles = (uint32_t)((uint64_t)cpu_hz * FS_BLOCK_SIZE / FS_SAMPLE_RATE * FS_MIDI_BUDGET_PERCENT / 100);
     midi_in_init();
+#if CONFIG_FSYNTH_USB_MIDI
+    if (!usb_midi_init()) printf("usb: MIDI device failed to start\n");
+#endif
 
     FsFontResult res;
     while ((res = attach_font()) != FS_FONT_OK) {
@@ -321,6 +335,7 @@ void app_main(void) {
            (unsigned long)font.header->data_frames, font_where);
 
     fs_synth_init(&synth, &font, FS_SAMPLE_RATE);
+    const bool settings_loaded = settings_load(&synth);
     if (fs_demo_midi_size && fs_smf_init(&demo, fs_demo_midi, fs_demo_midi_size, FS_SAMPLE_RATE)) {
         demo_playing = true;
     }
@@ -340,6 +355,10 @@ void app_main(void) {
            FS_SAMPLE_RATE, CONFIG_FSYNTH_I2S_DIN_PIN, CONFIG_FSYNTH_I2S_BCK_PIN, CONFIG_FSYNTH_I2S_WS_PIN,
            (unsigned long)(cpu_hz / 1000000), FS_MAX_VOICES, FS_BLOCK_SIZE, AUDIO_FRAMES,
            DUAL_CORE_LABEL);
+    printf("settings: %s\n", settings_loaded ? "loaded from NVS" : "defaults (none saved)");
+#if FS_EFFECTS_EXTERNAL
+    printf("effects: %s\n", synth.reverb && synth.chorus ? "in PSRAM" : "PSRAM allocation failed, some effects off");
+#endif
     printf("synth state %u bytes in internal RAM; free: internal %u, PSRAM %u\n", (unsigned)sizeof(synth),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
@@ -362,7 +381,22 @@ void app_main(void) {
     for (;;) {
         midi_in_poll();
         console_poll();
-        if (midi_in_settings_cmd()) printf("settings: saving is not supported on the ESP32-P4 yet\n");
+        const uint8_t cmd = midi_in_settings_cmd();
+        if (cmd == MIDI_SETTINGS_SAVE) {
+            settings_save(&synth);
+            printf("settings: saved to NVS\n");
+        } else if (cmd == MIDI_SETTINGS_ERASE) {
+            settings_erase();
+            // Defaults go through the MIDI queue, so the render task applies
+            // them between blocks
+            const uint8_t vol[3] = { MIDI_MSG_MASTER_VOLUME, 0x7f, 0x7f };
+            midi_in_inject(vol, 3);
+            for (uint8_t p = 0; p < 4; ++p) {
+                const uint8_t eq[3] = { MIDI_MSG_EQ, p, (uint8_t)((p & 1) ? 0x40 : 0) };
+                midi_in_inject(eq, 3);
+            }
+            printf("settings: erased, defaults restored\n");
+        }
         if (esp_timer_get_time() >= next_report) {
             next_report += 1000000;
             print_status(buffer_us);

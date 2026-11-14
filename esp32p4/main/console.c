@@ -1,6 +1,7 @@
 //
-// console.c - serial console commands. See console.h.
+// console.c - serial console: typed commands and raw MIDI. See console.h.
 //
+// Commands (type them in `idf.py monitor`):
 //   stress N [P]  hold sustained notes until N voices are playing
 //                 (program P, default 16 = Organ 1, on channels 1-9 and 11-16)
 //   off           all sound off on every channel
@@ -10,25 +11,40 @@
 // Commands go through the MIDI queue (midi_in_inject), so they behave
 // exactly like MIDI input: the first one stops the demo song.
 //
+// Raw MIDI on the same port: typed text is printable ASCII, so a byte of
+// 0x80 or more can only be a MIDI status byte. It and the data bytes that
+// complete its message go to the MIDI parser (midi_in_serial.h); anything
+// else is text. Senders must therefore not use running status (every
+// message starts with its status byte). host/serial_midi.c does that.
+// SysEx runs until F7; real-time bytes (F8-FF) may appear anywhere.
+//
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
+#include "sdkconfig.h"
 
 #include "console.h"
 #include "midi_in.h"
+#include "midi_in_serial.h"
+
+#define CONSOLE_UART CONFIG_ESP_CONSOLE_UART_NUM
 
 static uint32_t (*voices)(void);
 static char line[64];
 static unsigned line_len;
+static unsigned midi_left;      // Data bytes still due for the current MIDI message
+static bool in_sysex;
 
 void console_init(uint32_t (*active_voices)(void)) {
     voices = active_voices;
-    const int fl = fcntl(STDIN_FILENO, F_GETFL);
-    fcntl(STDIN_FILENO, F_SETFL, fl | O_NONBLOCK);
+    // Interrupt driven receive with a 1 KB buffer, so MIDI bursts are not
+    // lost between polls; printf keeps working through the driver
+    uart_driver_install(CONSOLE_UART, 1024, 0, 0, NULL, 0);
+    uart_vfs_dev_use_driver(CONSOLE_UART);
     printf("console: type 'help' for commands\n");
 }
 
@@ -96,21 +112,57 @@ static void run(char *cmd) {
     }
 }
 
+// Data bytes that follow a status byte (no running status here).
+static unsigned midi_data_bytes(uint8_t status) {
+    switch (status & 0xf0) {
+    case 0xc0: case 0xd0: return 1;
+    case 0xf0:
+        return status == 0xf2 ? 2 : (status == 0xf1 || status == 0xf3) ? 1 : 0;
+    default: return 2;      // 8x 9x Ax Bx Ex
+    }
+}
+
+// Route one byte: MIDI (see the file header) or text. Returns true if it
+// was MIDI.
+static bool midi_byte(uint8_t b) {
+    if (b >= 0xf8) {                    // Real time: anywhere, no state change
+        midi_in_serial_byte(b);
+        return true;
+    }
+    if (b >= 0x80) {                    // Status byte starts a message
+        in_sysex = b == 0xf0;
+        midi_left = in_sysex ? 0 : midi_data_bytes(b);
+        midi_in_serial_byte(b);
+        return true;
+    }
+    if (in_sysex || midi_left) {        // Data byte of the current message
+        if (midi_left) --midi_left;
+        midi_in_serial_byte(b);
+        return true;
+    }
+    return false;
+}
+
 void console_poll(void) {
-    char c;
-    while (read(STDIN_FILENO, &c, 1) == 1) {
-        if (c == '\r' || c == '\n') {
-            if (line_len == 0) continue;
-            putchar('\n');
-            line[line_len] = 0;
-            line_len = 0;
-            run(line);
-        } else if ((c == 8 || c == 127) && line_len) {
-            --line_len;
-            fputs("\b \b", stdout);
-        } else if (c >= ' ' && c < 127 && line_len < sizeof(line) - 1) {   // Printable ASCII only (boot noise)
-            line[line_len++] = c;
-            putchar(c);
+    uint8_t buf[64];
+    int n;
+    while ((n = uart_read_bytes(CONSOLE_UART, buf, sizeof(buf), 0)) > 0) {
+        for (int i = 0; i < n; ++i) {
+            const uint8_t c = buf[i];
+            if (midi_byte(c)) continue;
+            if (c == '\r' || c == '\n') {
+                if (line_len == 0) continue;
+                putchar('\n');
+                line[line_len] = 0;
+                line_len = 0;
+                run(line);
+            } else if ((c == 8 || c == 127) && line_len) {
+                --line_len;
+                fputs("\b \b", stdout);
+            } else if (c >= ' ' && c < 127 && line_len < sizeof(line) - 1) {
+                line[line_len++] = (char)c;
+                putchar(c);
+            }
         }
         fflush(stdout);
     }

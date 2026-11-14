@@ -2,7 +2,15 @@
 # portable synth core from ../../core.
 
 set(FS_CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/../../core)
-set(FS_FW_DIR ${CMAKE_CURRENT_LIST_DIR}/../../firmware)   # midi_parse.c/h and midi_in.h only
+set(FS_FW_DIR ${CMAKE_CURRENT_LIST_DIR}/../../firmware)   # midi_parse.c/h, midi_in.h and settings.h only
+
+# Only those firmware headers are put on the include path (copied, and
+# re-copied when they change): the RP2350's tusb_config.h must not be seen
+# by TinyUSB here.
+set(FS_FW_INCLUDE ${CMAKE_CURRENT_BINARY_DIR}/fw_include)
+foreach(h midi_in.h midi_parse.h settings.h)
+    configure_file(${FS_FW_DIR}/${h} ${FS_FW_INCLUDE}/${h} COPYONLY)
+endforeach()
 
 # Optional MIDI file embedded and played at boot:
 #   idf.py -DFS_DEMO_MIDI=/path/to/song.mid build
@@ -30,6 +38,7 @@ idf_component_register(
         audio_i2s.c
         midi_in.c
         console.c
+        settings.c
         ${FS_FW_DIR}/midi_parse.c
         ${FS_CORE_HOT}
         ${FS_CORE_DIR}/fs_gen.c
@@ -38,14 +47,20 @@ idf_component_register(
         ${FS_CORE_DIR}/fs_math.c
         ${FS_CORE_DIR}/fs_smf.c
         ${FS_DEMO_C}
-    INCLUDE_DIRS . ${FS_CORE_DIR} ${FS_FW_DIR}
-    PRIV_REQUIRES esp_driver_i2s esp_driver_uart esp_partition esp_psram esp_timer
+    INCLUDE_DIRS . ${FS_CORE_DIR} ${FS_FW_INCLUDE}
+    PRIV_REQUIRES esp_driver_i2s esp_driver_uart esp_partition esp_psram esp_timer nvs_flash vfs
 )
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     FS_SAMPLE_RATE=${CONFIG_FSYNTH_SAMPLE_RATE}
     FS_MAX_VOICES=${CONFIG_FSYNTH_MAX_VOICES}
 )
+if(CONFIG_FSYNTH_USB_MIDI)
+    target_sources(${COMPONENT_LIB} PRIVATE usb_midi.c)
+endif()
+if(CONFIG_FSYNTH_EFFECTS_IN_PSRAM)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE FS_EFFECTS_EXTERNAL=1)
+endif()
 
 # The synth core is float heavy: keep it fast. Fused multiply-add is on by
 # default here (faster on the P4, unlike the RP2350; see Kconfig.projbuild).

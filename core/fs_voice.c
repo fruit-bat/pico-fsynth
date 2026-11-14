@@ -125,9 +125,12 @@ static void FS_RAM_FUNC(update_dynamic)(FsVoice *v, const float sum[FS_GEN_COUNT
     v->pan = fs_clampf(gen(v, sum, FS_GEN_PAN), -500.0f, 500.0f);
     v->reverb_send = fs_clampf(gen(v, sum, FS_GEN_REVERB_EFFECTS_SEND), 0.0f, 1000.0f) * 0.001f;
     v->chorus_send = fs_clampf(gen(v, sum, FS_GEN_CHORUS_EFFECTS_SEND), 0.0f, 1000.0f) * 0.001f;
-    // Constant power pan
-    v->pan_l = sqrtf(0.5f - v->pan * 0.001f);
-    v->pan_r = sqrtf(0.5f + v->pan * 0.001f);
+    // Constant power pan. Clamped at 0: at +-500 the argument should be 0,
+    // but with fused multiply-add (FS_FP_CONTRACT, the ESP32-P4 default)
+    // 0.5 - 500 * 0.001f comes out as -2.4e-8, and its sqrtf is NaN, which
+    // silenced the other side for every hard panned voice.
+    v->pan_l = sqrtf(fmaxf(0.0f, 0.5f - v->pan * 0.001f));
+    v->pan_r = sqrtf(fmaxf(0.0f, 0.5f + v->pan * 0.001f));
 }
 
 // ---------------------------------------------------------------------------

@@ -112,6 +112,37 @@ to GND, FMT low and XSMT high.
 UART MIDI at 31250 baud on GPIO20 (physical pin 35). It needs the usual
 opto-isolator circuit, as on the Pico. USB MIDI is not ported yet.
 
+## Console commands
+
+For testing without MIDI hardware, type these in `idf.py monitor`:
+
+| Command | What it does |
+|---|---|
+| `stress VOICES [PROGRAM]` | Holds sustained notes until that many voices play (default program 16, Organ 1) |
+| `off` | All Sound Off on every channel |
+| `reset` | GM reset |
+| `help` | Lists the commands |
+
+## Performance
+
+Measured on 2026-11-14 with `stress`: chip revision v1.3 at 360 MHz, both
+cores, font read from flash, TimGM6mb.
+
+| Voices | Fused multiply-add | Core 1 | Core 0 | Cycles per voice-sample |
+|---|---|---|---|---|
+| 80 | off | 61% | 56% | 108 |
+| 112 | off | 82% | 77% | 108 |
+| 112 | on (default) | 72% | 67% | 94 |
+
+There were no underruns in any of these runs. All Sound Off with 112 voices
+playing briefly peaked at 85% (95% with fused multiply-add off).
+
+- 112 voices is a memory limit, not a CPU one. The synth state (mostly
+  2 KB of stream ring per voice) must fit in internal RAM, and 120 voices
+  does not link.
+- Reading samples from flash costs under 1 cycle per voice-sample, so
+  copying the font to PSRAM has little to gain.
+
 ## Not ported yet
 
 USB MIDI, saving settings (`host/settings.sh`), the micro benchmarks.

@@ -29,6 +29,7 @@ idf_component_register(
         main.c
         audio_i2s.c
         midi_in.c
+        console.c
         ${FS_FW_DIR}/midi_parse.c
         ${FS_CORE_HOT}
         ${FS_CORE_DIR}/fs_gen.c
@@ -46,8 +47,8 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     FS_MAX_VOICES=${CONFIG_FSYNTH_MAX_VOICES}
 )
 
-# The synth core is float heavy: keep it fast. Fused multiply-add is off
-# unless enabled in menuconfig (see FS_FP_CONTRACT in ../../CMakeLists.txt).
+# The synth core is float heavy: keep it fast. Fused multiply-add is on by
+# default here (faster on the P4, unlike the RP2350; see Kconfig.projbuild).
 set(FS_CORE_OPTIONS "-O3;-fno-math-errno")
 if(NOT CONFIG_FSYNTH_FP_CONTRACT)
     list(APPEND FS_CORE_OPTIONS "-ffp-contract=off")

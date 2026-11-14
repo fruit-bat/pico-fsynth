@@ -21,6 +21,8 @@
 // plays until live MIDI arrives; without one a short arpeggio confirms
 // audio.
 //
+// A small serial command line (console.c) can hold test notes: type help.
+//
 // Not yet ported: USB MIDI, saving settings (NVS), the micro benchmarks.
 //
 #include <stdio.h>
@@ -40,6 +42,7 @@
 #include "fs_smf.h"
 #include "audio_i2s.h"
 #include "midi_in.h"
+#include "console.h"
 
 #ifdef CONFIG_FSYNTH_FP_CONTRACT
 #define FP_CONTRACT_LABEL "  [fused multiply-add on]"
@@ -191,6 +194,10 @@ static void render_task(void *arg) {
         const uint32_t v = fs_synth_active_voices(&synth);
         if (v > stat_voices_max) stat_voices_max = v;
     }
+}
+
+static uint32_t active_voices(void) {
+    return fs_synth_active_voices(&synth);
 }
 
 // Wait ms milliseconds while keeping MIDI input serviced.
@@ -349,10 +356,12 @@ void app_main(void) {
         midi_in_inject(off, 3);
     }
 
+    console_init(active_voices);
     const float buffer_us = (float)AUDIO_FRAMES * 1e6f / (float)FS_SAMPLE_RATE;
     int64_t next_report = esp_timer_get_time() + 1000000;
     for (;;) {
         midi_in_poll();
+        console_poll();
         if (midi_in_settings_cmd()) printf("settings: saving is not supported on the ESP32-P4 yet\n");
         if (esp_timer_get_time() >= next_report) {
             next_report += 1000000;

@@ -55,6 +55,17 @@
 #define FS_INTERP_CUBIC 1
 #endif
 
+// Cubic interpolation weights from a table instead of evaluating the
+// polynomial per frame: 0 = off, else the table has 2^bits + 1 entries
+// (16 bytes each) and the fractional position is rounded to 1 / 2^bits of
+// a frame. Four independent multiplies replace a chain of dependent ones,
+// which suits CPUs with long floating point latency (the ESP32-P4: about
+// 15% faster). The output differs very slightly from the polynomial
+// (about -80 dB at 1 kHz with 10 bits, -60 dB near Nyquist).
+#ifndef FS_INTERP_TABLE_BITS
+#define FS_INTERP_TABLE_BITS 0
+#endif
+
 // Highest sample rate the effects buffers are sized for
 #ifndef FS_MAX_SAMPLE_RATE
 #define FS_MAX_SAMPLE_RATE 48000

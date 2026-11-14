@@ -58,6 +58,15 @@ menu "pico-fsynth"
             (FS_RENDER_TWO_PASS). Lets the P4's in-order cores overlap
             floating point work.
 
+    config FSYNTH_INTERP_TABLE_BITS
+        int "Interpolation weight table size (bits, 0 = off)"
+        range 0 12
+        default 10
+        help
+            Cubic interpolation weights from a table of 2^bits + 1 entries
+            (FS_INTERP_TABLE_BITS) instead of the polynomial: faster on the
+            P4, output very slightly different. 10 bits = 16 KB.
+
     config FSYNTH_I2S_DIN_PIN
         int "I2S data (DIN) GPIO"
         default 23

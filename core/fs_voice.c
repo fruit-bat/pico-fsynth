@@ -431,6 +431,13 @@ void FS_RAM_FUNC(fs_voice_kill)(FsVoice *v, float sample_rate) {
 
 // One output frame interpolated from the stream ring at pos + frac / 2^32.
 static inline __attribute__((always_inline)) float interpolate(const int16_t *ring, uint32_t pos, uint32_t frac) {
+#if FS_INTERP_CUBIC && FS_INTERP_TABLE_BITS
+    // Weights for frac rounded to the nearest table entry (no overflow:
+    // the index is at most 2^bits, the table's last entry)
+    const float *w = fs_interp_weights[((frac >> (31 - FS_INTERP_TABLE_BITS)) + 1) >> 1];
+    const int16_t *p = ring + ((pos - 1) & FS_STREAM_MASK);
+    return (w[0] * (float)p[0] + w[1] * (float)p[1]) + (w[2] * (float)p[2] + w[3] * (float)p[3]);
+#else
     const float f = fs_frac32_to_float(frac);
 #if FS_INTERP_CUBIC
     // Guard frames after the ring end make the 4 frames contiguous
@@ -448,6 +455,7 @@ static inline __attribute__((always_inline)) float interpolate(const int16_t *ri
     const float s1 = (float)p[0];
     const float s2 = (float)p[1];
     return s1 + f * (s2 - s1);
+#endif
 #endif
 }
 

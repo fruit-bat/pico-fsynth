@@ -130,7 +130,14 @@ static inline float fs_clampf(float x, float lo, float hi) {
 // SF2 concave curve sampled at 129 points over [0, 1], see fs_math.c
 extern float fs_concave_table[129];
 
-// Build fs_concave_table. Call once before any voice starts.
+#if FS_INTERP_TABLE_BITS
+// Catmull-Rom weights for frames x[-1], x[0], x[1], x[2] at fractional
+// position k / 2^FS_INTERP_TABLE_BITS, k = 0 .. 2^bits (FS_INTERP_TABLE_BITS)
+extern float fs_interp_weights[(1u << FS_INTERP_TABLE_BITS) + 1][4];
+#endif
+
+// Build fs_concave_table (and fs_interp_weights). Call once before any
+// voice starts.
 void fs_math_init(void);
 
 // SF2 modulator curves, mapping [0, 1] onto [0, 1]. Inputs outside the

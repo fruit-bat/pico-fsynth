@@ -264,6 +264,23 @@ absorbed. That is why the default is 128.
     not the compression.
   - Reading compressed data from PSRAM costs 28.2 cycles per frame cold
     and 25.0 warm, so PSRAM adds almost nothing over the decoding.
+- **Voice sample loop:** two options, both on by default, speed it up on
+  the P4. They are measured with the `bench` console command (micro
+  benchmarks of the loop, `main/bench.c`) and with `stress`:
+  - The P4's FPU takes about 4 cycles to deliver a result to a dependent
+    operation, but runs independent operations about 1.5 cycles apart.
+    The cubic interpolation was a chain of about 6 dependent steps.
+  - "Two-pass voice sample loop" (`FS_RENDER_TWO_PASS`) interpolates a
+    block first, then filters and mixes. Output is bit-identical. It saves
+    9% in `bench`, but only about 1.5% in the synth, where fetching each
+    voice's ring from internal RAM stalls the in-order core.
+  - "Interpolation weight table" (`FS_INTERP_TABLE_BITS`, 10 bits, 16 KB)
+    looks up the four cubic weights instead of evaluating the polynomial.
+    Rendered audio differs from the polynomial by at most 1 LSB (about
+    73 dB below the music, on GeneralUser GS).
+  - Together, measured with GeneralUser GS at 128 voices: organ notes 89.7%
+    to 82.7% load (sample loop 74.7 to 65.6 cycles), string notes 92.1% to
+    87.5%, demo song about 125 to 117 cycles per voice-sample.
 - **Font in PSRAM:** reading samples from flash costs under 1 cycle per
   voice-sample, so copying the font to PSRAM has little to gain.
 

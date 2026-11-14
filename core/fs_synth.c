@@ -239,6 +239,7 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
     }
     fs_eq_init(&s->eq, s->sample_rate);
     s->eq_gs[0] = 0; s->eq_gs[1] = 0x40; s->eq_gs[2] = 0; s->eq_gs[3] = 0x40;
+    fs_synth_set_width(s, 100);
     memset(s->send_reverb, 0, sizeof(s->send_reverb));
     memset(s->send_chorus, 0, sizeof(s->send_chorus));
 #if FS_ENABLE_REVERB
@@ -277,6 +278,13 @@ void fs_synth_set_eq(FsSynth *s, float low_hz, float low_db, float high_hz, floa
 
 // See fs_synth.h. Stores the GS parameter (clamped to its legal range; it
 // is what settings.c saves) and rebuilds the EQ from all four.
+// See fs_synth.h.
+void fs_synth_set_width(FsSynth *s, uint8_t percent) {
+    if (percent > 100) percent = 100;
+    s->width_pct = percent;
+    s->width = (float)percent * 0.01f;
+}
+
 void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value) {
     if (param > 3) return;
     if (param == 1 || param == 3) value = value < 0x34 ? 0x34 : value > 0x4c ? 0x4c : value;
@@ -509,6 +517,9 @@ void FS_RAM_FUNC(fs_synth_midi)(FsSynth *s, const uint8_t *msg, uint32_t len) {
                 if (((0x40 + 0x02 + msg[7] + msg[8] + msg[9]) & 0x7f) == 0) fs_synth_set_eq_gs(s, msg[7], msg[8]);
             } else if (status == 0xf0 && len >= 7 && msg[1] == 0x7f && msg[3] == 0x04 && msg[4] == 0x01) {
                 fs_synth_set_master_volume(s, (uint16_t)((msg[5] & 0x7f) | ((msg[6] & 0x7f) << 7)));
+            } else if (status == 0xf0 && len == 7 && msg[1] == 0x7d && msg[2] == 0x46 && msg[3] == 0x53 &&
+                       msg[4] == 0x03) {
+                fs_synth_set_width(s, msg[5]); // pico-fsynth stereo width: F0 7D 46 53 03 ww F7
             }
             break;
         default: break; // Poly pressure not supported
@@ -614,6 +625,17 @@ void FS_RAM_FUNC(fs_synth_render_end_float)(FsSynth *s, float *left, float *righ
     }
 
     fs_eq_process(&s->eq, bus_l, bus_r, B);
+
+    // Stereo width: scale the side (difference) signal
+    if (s->width_pct < 100) {
+        const float w = s->width;
+        for (int k = 0; k < B; ++k) {
+            const float mid = (bus_l[k] + bus_r[k]) * 0.5f;
+            const float side = (bus_l[k] - bus_r[k]) * 0.5f * w;
+            bus_l[k] = mid + side;
+            bus_r[k] = mid - side;
+        }
+    }
 
     const float g = s->gain * s->master_volume;
     float peak = s->stats.peak;

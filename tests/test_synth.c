@@ -238,6 +238,43 @@ TEST(gm_reset_sysex) {
     CHECK_EQ(fs_synth_active_voices(&synth), 0);
 }
 
+// Sum of squares of each channel over n blocks
+static void energy(FsSynth *s, int blocks, double *el, double *er) {
+    float l[B], r[B];
+    *el = *er = 0.0;
+    for (int i = 0; i < blocks; ++i) {
+        fs_synth_render_float(s, l, r);
+        for (int k = 0; k < B; ++k) { *el += (double)l[k] * l[k]; *er += (double)r[k] * r[k]; }
+    }
+}
+
+// Stereo width: a hard left note stays left at 100%, reaches the right at
+// 1/3 of the left's amplitude at 50%, and is centred at 0% (set by SysEx).
+// Not undone by a GM reset.
+TEST(stereo_width) {
+    setup();
+    double el, er;
+    midi3(&synth, 0xb0, 10, 0);                 // Pan hard left
+    midi3(&synth, 0x90, 60, 100);
+    render(&synth, 10);
+    energy(&synth, 20, &el, &er);
+    CHECK(el > 0.0 && er < el * 1e-6);
+    const uint8_t w50[] = { 0xf0, 0x7d, 0x46, 0x53, 0x03, 50, 0xf7 };
+    fs_synth_midi(&synth, w50, sizeof(w50));
+    CHECK_EQ(synth.width_pct, 50);
+    energy(&synth, 20, &el, &er);
+    CHECK(fabs(sqrt(er / el) - 1.0 / 3.0) < 0.01);
+    const uint8_t w0[] = { 0xf0, 0x7d, 0x46, 0x53, 0x03, 0, 0xf7 };
+    fs_synth_midi(&synth, w0, sizeof(w0));
+    energy(&synth, 20, &el, &er);
+    CHECK(fabs(er - el) <= el * 1e-6);
+    const uint8_t gm_on[] = { 0xf0, 0x7e, 0x7f, 0x09, 0x01, 0xf7 };
+    fs_synth_midi(&synth, gm_on, sizeof(gm_on));
+    CHECK_EQ(synth.width_pct, 0);
+    fs_synth_set_width(&synth, 200);            // Clamped
+    CHECK_EQ(synth.width_pct, 100);
+}
+
 // Far more notes than voices: the pool limits hold, the bookkeeping stays
 // consistent, and the most recent note always sounds
 TEST(voice_stealing) {
@@ -322,6 +359,7 @@ int main(void) {
     RUN(program_fallback);
     RUN(all_sound_off);
     RUN(gm_reset_sysex);
+    RUN(stereo_width);
     RUN(voice_stealing);
     RUN(split_render_matches);
     tb_free(&tb);

@@ -131,6 +131,8 @@ typedef struct {
 
     FsEq eq;                    // Master EQ (GS SysEx 40 02 0x)
     uint8_t eq_gs[4];           // GS EQ parameters: low freq, low gain, high freq, high gain
+    uint8_t width_pct;          // Stereo width in percent, 0..100 (default 100)
+    float width;                // The same, 0..1
 
     FsSynthStats stats;
 } FsSynth;
@@ -158,6 +160,13 @@ void fs_synth_set_eq(FsSynth *s, float low_hz, float low_db, float high_hz, floa
 // GS EQ parameter (address 40 02 0p): p = 0 low freq (0/1), 1 low gain
 // (0x34..0x4c, 0x40 = 0 dB), 2 high freq (0/1), 3 high gain
 void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value);
+
+// Stereo width, 0..100 percent (larger values are taken as 100): scales the
+// difference between left and right of the final mix (mid/side), so 100
+// (the default) leaves it as the MIDI and font pan it, 50 pulls a hard
+// panned part halfway to the centre, 0 is mono. Not changed by resets.
+// SysEx F0 7D 46 53 03 ww F7 (host/stereo_width.sh).
+void fs_synth_set_width(FsSynth *s, uint8_t percent);
 
 // Switch effects at runtime (when compiled in). Default on.
 static inline void fs_synth_set_effects(FsSynth *s, bool reverb, bool chorus) {
@@ -202,7 +211,8 @@ void fs_synth_reset(FsSynth *s);    // GM reset: controllers, programs, sound of
 // Dispatch a complete MIDI message (status byte first, no running status)
 // to the functions above. Also understands these SysEx messages (msg
 // starts F0, ends F7): GM System On, GM2 System On and GS Reset (all
-// fs_synth_reset), GM Master Volume and GS master EQ. Others are ignored.
+// fs_synth_reset), GM Master Volume, GS master EQ and the stereo width SysEx above. Others
+// are ignored.
 void fs_synth_midi(FsSynth *s, const uint8_t *msg, uint32_t len);
 
 // Render FS_BLOCK_SIZE stereo frames as interleaved int16 (L, R, L, R...).

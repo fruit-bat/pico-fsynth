@@ -27,15 +27,21 @@
 //   GM master volume:     MIDI_MSG_MASTER_VOLUME, lsb, msb    (3 bytes)
 //   GS master EQ:         MIDI_MSG_EQ, parameter 0..3, value  (3 bytes)
 //   Settings command:     MIDI_MSG_SETTINGS, MIDI_SETTINGS_*  (2 bytes)
+//   Stereo width:         MIDI_MSG_WIDTH, percent 0..127      (2 bytes)
 #define MIDI_MSG_RESET 0xff
 #define MIDI_MSG_MASTER_VOLUME 0xfe
 #define MIDI_MSG_EQ 0xfd
 #define MIDI_MSG_SETTINGS 0xfc
+#define MIDI_MSG_WIDTH 0xfb
 
 // Settings commands, SysEx F0 7D 46 53 cmd F7 (7D = non-commercial ID,
 // 46 53 = "FS"). See host/settings.sh.
-#define MIDI_SETTINGS_SAVE 1        // Save master volume and EQ to flash
+#define MIDI_SETTINGS_SAVE 1        // Save master volume, EQ and stereo width to flash
 #define MIDI_SETTINGS_ERASE 2       // Erase saved settings, back to defaults
+// Stereo width (not a settings command, but in the same family):
+// F0 7D 46 53 03 ww F7, ww = percent (0 mono .. 100 full). See
+// host/stereo_width.sh.
+#define MIDI_FSYNTH_WIDTH 3
 
 // Receives each complete message (1..3 bytes); msg is only valid during the
 // call. ctx is the pointer given at init.

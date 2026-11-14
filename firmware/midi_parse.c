@@ -40,6 +40,11 @@ static bool is_settings(const uint8_t *s, uint32_t len) {
            (s[4] == MIDI_SETTINGS_SAVE || s[4] == MIDI_SETTINGS_ERASE);
 }
 
+// pico-fsynth stereo width (F0 7D 46 53 03 ww F7)
+static bool is_width(const uint8_t *s, uint32_t len) {
+    return len == 7 && s[1] == 0x7d && s[2] == 0x46 && s[3] == 0x53 && s[4] == MIDI_FSYNTH_WIDTH;
+}
+
 // Act on a complete SysEx message: emit the internal code if it is one we
 // understand, otherwise nothing.
 static void sysex_dispatch(const uint8_t *s, uint32_t len, MidiEmit emit, void *ctx) {
@@ -56,6 +61,9 @@ static void sysex_dispatch(const uint8_t *s, uint32_t len, MidiEmit emit, void *
     } else if (is_eq(s, len)) {
         const uint8_t m[3] = { MIDI_MSG_EQ, s[7], (uint8_t)(s[8] & 0x7f) };
         emit(ctx, m, 3);
+    } else if (is_width(s, len)) {
+        const uint8_t m[2] = { MIDI_MSG_WIDTH, (uint8_t)(s[5] & 0x7f) };
+        emit(ctx, m, 2);
     }
 }
 

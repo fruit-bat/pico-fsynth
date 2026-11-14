@@ -53,6 +53,7 @@ static const uint8_t gs_reset[] = { 0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x
 static const uint8_t master_vol[] = { 0xf0, 0x7f, 0x7f, 0x04, 0x01, 0x11, 0x22, 0xf7 };
 static const uint8_t eq_ok[] = { 0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x02, 0x01, 0x44, 0x79, 0xf7 };
 static const uint8_t settings_save[] = { 0xf0, 0x7d, 0x46, 0x53, 0x01, 0xf7 };
+static const uint8_t width_60[] = { 0xf0, 0x7d, 0x46, 0x53, 0x03, 60, 0xf7 };
 
 TEST(uart_channel_messages_and_running_status) {
     reset();
@@ -81,11 +82,13 @@ TEST(uart_realtime_ignored) {
 
 // Each recognised SysEx gives the same code over UART and USB
 TEST(sysex_recognised_on_both_ports) {
-    const uint8_t *msgs[] = { gm_on, gs_reset, master_vol, eq_ok, settings_save };
-    const size_t lens[] = { sizeof(gm_on), sizeof(gs_reset), sizeof(master_vol), sizeof(eq_ok), sizeof(settings_save) };
-    const uint8_t codes[] = { MIDI_MSG_RESET, MIDI_MSG_RESET, MIDI_MSG_MASTER_VOLUME, MIDI_MSG_EQ, MIDI_MSG_SETTINGS };
+    const uint8_t *msgs[] = { gm_on, gs_reset, master_vol, eq_ok, settings_save, width_60 };
+    const size_t lens[] = { sizeof(gm_on), sizeof(gs_reset), sizeof(master_vol), sizeof(eq_ok), sizeof(settings_save),
+                            sizeof(width_60) };
+    const uint8_t codes[] = { MIDI_MSG_RESET, MIDI_MSG_RESET, MIDI_MSG_MASTER_VOLUME, MIDI_MSG_EQ, MIDI_MSG_SETTINGS,
+                              MIDI_MSG_WIDTH };
     for (int port = 0; port < 2; ++port) {
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 6; ++i) {
             reset();
             if (port == 0) uart_feed(msgs[i], lens[i]);
             else usb_feed_sysex(msgs[i], lens[i]);
@@ -106,6 +109,10 @@ TEST(sysex_recognised_on_both_ports) {
     uart_feed(settings_save, sizeof(settings_save));
     CHECK_EQ(out[0].len, 2);
     CHECK_EQ(out[0].data[1], MIDI_SETTINGS_SAVE);
+    reset();
+    usb_feed_sysex(width_60, sizeof(width_60));
+    CHECK_EQ(out[0].len, 2);
+    CHECK_EQ(out[0].data[1], 60);
 }
 
 TEST(eq_bad_checksum_ignored) {

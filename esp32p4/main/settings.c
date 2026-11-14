@@ -1,5 +1,5 @@
 //
-// settings.c - device settings (master volume and EQ) in NVS on the
+// settings.c - device settings (master volume, EQ and stereo width) in NVS on the
 // ESP32-P4. Implements firmware/settings.h, as the RP2350 firmware's
 // settings.c does with a raw flash sector.
 //
@@ -12,6 +12,7 @@
 // stalls for that time (a few ms; longer if NVS has to erase a sector),
 // so the audio may drop out briefly, as on the Pico.
 //
+#include <stddef.h>
 #include <string.h>
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -20,14 +21,18 @@
 
 #define NAMESPACE "fsynth"
 #define KEY "settings"
-#define SETTINGS_VERSION 1
+#define SETTINGS_VERSION 2   // 2 added width_pct
 
 typedef struct {
     uint32_t version;
     uint32_t size;              // sizeof(Settings) when written
     float master_volume;        // 0..1
     uint8_t eq_gs[4];           // GS EQ parameters: low freq, low gain, high freq, high gain
+    uint8_t width_pct;          // Stereo width, percent (version 2)
 } Settings;
+
+// Size of a version 1 record (no width)
+#define SETTINGS_V1_SIZE (offsetof(Settings, width_pct))
 
 static bool nvs_ready;
 
@@ -52,11 +57,14 @@ bool settings_load(FsSynth *synth) {
     size_t len = sizeof(s);
     const esp_err_t err = nvs_get_blob(h, KEY, &s, &len);
     nvs_close(h);
-    if (err != ESP_OK || len != sizeof(s) || s.version != SETTINGS_VERSION || s.size != sizeof(s)) return false;
+    if (err != ESP_OK) return false;
+    const bool v1 = s.version == 1 && len == SETTINGS_V1_SIZE && s.size == SETTINGS_V1_SIZE;
+    if (!v1 && (len != sizeof(s) || s.version != SETTINGS_VERSION || s.size != sizeof(s))) return false;
     float v = s.master_volume;
     if (!(v >= 0.0f && v <= 1.0f)) v = 1.0f;
     fs_synth_set_master_volume(synth, (uint16_t)(v * 16383.0f + 0.5f));
     for (uint8_t p = 0; p < 4; ++p) fs_synth_set_eq_gs(synth, p, s.eq_gs[p]);
+    if (!v1) fs_synth_set_width(synth, s.width_pct);
     return true;
 }
 
@@ -72,6 +80,7 @@ void settings_save(const FsSynth *synth) {
         .version = SETTINGS_VERSION,
         .size = sizeof(Settings),
         .master_volume = synth->master_volume,
+        .width_pct = synth->width_pct,
     };
     memcpy(s.eq_gs, synth->eq_gs, sizeof(s.eq_gs));
     nvs_handle_t h;

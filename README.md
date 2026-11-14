@@ -170,13 +170,24 @@ From the PC:
     host/master_eq.sh 3 -3          # a little bass, a little less treble
     host/master_eq.sh 0 0           # flat
 
-Master volume and EQ can be saved to the last flash sector and are then loaded
+Stereo width pulls hard panned parts towards the centre, e.g. for
+orchestral files on headphones: `host/stereo_width.sh PERCENT` (SysEx
+`F0 7D 46 53 03 ww F7`), 100 = as the file pans it (default), 50 = halfway,
+0 = mono. It scales the difference between left and right of the final mix.
+`fsrender -W PERCENT` does the same on the PC.
+
+The scripts in `host/` take an optional port: a raw MIDI device such as
+`hw:2,0,0` (`amidi -l`) or an ALSA sequencer port such as `fsynth-serial`
+(the ESP32-P4 serial bridge). Without one they use the pico-fsynth USB MIDI
+device, or the bridge if that is running (`host/midi_port.sh`).
+
+Master volume, EQ and stereo width can be saved to the last flash sector and are then loaded
 at power up: `host/settings.sh save` (SysEx `F0 7D 46 53 01 F7`), or
 `host/settings.sh erase` (`... 02 F7`) to go back to defaults. Audio drops out
 for a moment while the flash is written. Reflashing the firmware or the font
 does not touch saved settings.
 
-    host/master_eq.sh 6 -6 && host/settings.sh save
+    host/master_eq.sh 6 -6 && host/stereo_width.sh 70 && host/settings.sh save
 
 Playing a file from the PC and stopping it part way leaves notes hanging;
 `host/reset.sh` silences everything (All Sound Off and Reset All Controllers on

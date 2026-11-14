@@ -2,7 +2,7 @@
 //
 // settings.h - device settings kept in the last flash sector.
 //
-// Holds master volume and master EQ: the settings that are properties of
+// Holds master volume, master EQ and stereo width: the settings that are properties of
 // the device rather than of a song, so GM/GS resets do not change them.
 // Saved and erased on request (SysEx F0 7D 46 53 cmd F7, see midi_in.h and
 // host/settings.sh) and loaded at power up. The font must end below the

@@ -181,20 +181,20 @@ It shows the board's status lines, and lines you type are sent to the board
 as console commands. It does not reset the board when it starts. Close
 `idf.py monitor` first: only one program can have the port open.
 
-The `host/*.sh` SysEx scripts use `amidi`, which needs a raw MIDI device
-rather than a sequencer port. The `snd-virmidi` kernel module provides one:
+The `host/*.sh` scripts (reset, master volume, EQ, stereo width, settings)
+find the bridge by themselves when no USB MIDI device is connected, and send
+to it with `aseqsend` (alsa-utils 1.2.11 or later). Give the port to be
+explicit:
 
 ```sh
-sudo modprobe snd-virmidi                # adds "Virtual Raw MIDI" devices
-amidi -l                                 # find one, e.g. hw:3,0
-aconnect 'Virtual Raw MIDI 3-0' fsynth-serial
-host/master_volume.sh 50 hw:3,0
-host/settings.sh save hw:3,0
+host/reset.sh                            # or: host/reset.sh fsynth-serial
+host/stereo_width.sh 60
+host/settings.sh save
 ```
 
 ## Settings
 
-Master volume and EQ are saved in NVS, in the `nvs` partition, by the same
+Master volume, EQ and stereo width are saved in NVS, in the `nvs` partition, by the same
 SysEx as on the Pico (`host/settings.sh save|erase`), and loaded at boot.
 The status line shows them, and the boot log says whether saved settings
 were loaded. A save holds up rendering for a few milliseconds while flash is

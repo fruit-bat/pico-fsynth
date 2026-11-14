@@ -26,6 +26,7 @@ else()
 endif()
 
 set(FS_CORE_HOT
+    ${CMAKE_CURRENT_LIST_DIR}/bench.c
     ${FS_CORE_DIR}/fs_voice.c
     ${FS_CORE_DIR}/fs_effects.c
     ${FS_CORE_DIR}/fs_synth.c
@@ -62,6 +63,9 @@ if(CONFIG_FSYNTH_USB_MIDI)
 endif()
 if(CONFIG_FSYNTH_EFFECTS_IN_PSRAM)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE FS_EFFECTS_EXTERNAL=1)
+endif()
+if(CONFIG_FSYNTH_RENDER_TWO_PASS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE FS_RENDER_TWO_PASS=1)
 endif()
 # The region index is only read at note-on: PSRAM is fine
 target_compile_definitions(${COMPONENT_LIB} PRIVATE FS_REGION_INDEX_EXTERNAL=1)

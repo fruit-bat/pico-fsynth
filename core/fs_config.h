@@ -43,6 +43,13 @@
 #define FS_REGION_INDEX_SIZE 4096
 #endif
 
+// Voice sample loop: 0 = one pass per frame (interpolate, filter, mix);
+// 1 = interpolate the whole block first, then filter and mix (see
+// render_samples in fs_voice.c). Which is faster depends on the CPU.
+#ifndef FS_RENDER_TWO_PASS
+#define FS_RENDER_TWO_PASS 0
+#endif
+
 // Interpolation: 1 = 4-point cubic (Catmull-Rom), 0 = linear
 #ifndef FS_INTERP_CUBIC
 #define FS_INTERP_CUBIC 1

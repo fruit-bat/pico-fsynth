@@ -7,6 +7,7 @@
 //   off           all sound off on every channel
 //   reset         GM reset (programs, controllers, sound off)
 //   codec         time sample decoding (or copying, for a plain font)
+//   bench         voice inner loop micro benchmarks (bench.c)
 //   help          list the commands
 //
 // Commands go through the MIDI queue (midi_in_inject), so they behave
@@ -31,6 +32,7 @@
 #include "console.h"
 #include "midi_in.h"
 #include "midi_in_serial.h"
+#include "bench.h"
 
 #define CONSOLE_UART CONFIG_ESP_CONSOLE_UART_NUM
 
@@ -110,8 +112,10 @@ static void run(char *cmd) {
         printf("reset\n");
     } else if (!strcmp(cmd, "codec")) {
         bench();
+    } else if (!strcmp(cmd, "bench")) {
+        bench_run_print();
     } else if (!strcmp(cmd, "help")) {
-        printf("commands: stress VOICES [PROGRAM], off, reset, codec, help\n");
+        printf("commands: stress VOICES [PROGRAM], off, reset, codec, bench, help\n");
     } else if (cmd[0]) {
         printf("unknown command '%s' (try help)\n", cmd);
     }

@@ -50,6 +50,14 @@ menu "pico-fsynth"
             voice-sample); on the RP2350 it is slower, so the Pico build
             has it off.
 
+    config FSYNTH_RENDER_TWO_PASS
+        bool "Two-pass voice sample loop"
+        default y
+        help
+            Interpolate a block of frames first, then filter and mix
+            (FS_RENDER_TWO_PASS). Lets the P4's in-order cores overlap
+            floating point work.
+
     config FSYNTH_I2S_DIN_PIN
         int "I2S data (DIN) GPIO"
         default 23

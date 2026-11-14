@@ -32,21 +32,38 @@ option(FS_DUAL_CORE "Render voices on both cores" ON)
 set(FS_FONT_FLASH_OFFSET 0x200000 CACHE STRING "Flash offset of the compiled font (firmware must fit below it)")
 
 set(FS_I2S_DATA_PIN 12 CACHE STRING "I2S data out GPIO")
-set(FS_I2S_CLOCK_PIN_BASE 13 CACHE STRING "I2S BCLK GPIO (LRCLK is the next GPIO)")
+set(FS_I2S_CLOCK_PIN_BASE 13 CACHE STRING "I2S BCLK GPIO (LRCLK is the next GPIO); with MCLK, LRCLK GPIO (BCLK is the next)")
+set(FS_I2S_MCLK_PIN -1 CACHE STRING "I2S MCLK GPIO (256 x sample rate), -1 for none")
 set(FS_PWM_PIN_L 20 CACHE STRING "PWM left GPIO (must be channel A of a slice)")
 set(FS_PWM_PIN_R 21 CACHE STRING "PWM right GPIO (channel B of the same slice)")
 set(FS_MIDI_UART_RX_PIN 5 CACHE STRING "MIDI in UART RX GPIO (UART1)")
 
 # Waveshare Pico-Audio (PCM5101A version) with a Pico-pinout board plugged on
-# top: DIN 26, BCK 27, LRCK 28. Overrides the I2S pins above. (The CS4344
-# "Rev2.1" board uses other pins and needs MCLK, which is not supported.)
+# top: DIN 26, BCK 27, LRCK 28. Overrides the I2S pins above.
 option(FS_PICO_AUDIO "I2S pins for a stacked Waveshare Pico-Audio (PCM5101A)" OFF)
+# Waveshare Pico-Audio Rev2.1 (CS4344): DIN 22, MCLK 26, LRCK 27, SCLK 28.
+# Overrides the I2S pins above and turns on MCLK.
+option(FS_PICO_AUDIO_V21 "I2S pins and MCLK for a stacked Waveshare Pico-Audio Rev2.1 (CS4344)" OFF)
+if(FS_PICO_AUDIO AND FS_PICO_AUDIO_V21)
+    message(FATAL_ERROR "FS_PICO_AUDIO and FS_PICO_AUDIO_V21 are exclusive")
+endif()
 if(FS_PICO_AUDIO)
     set(FS_AUDIO_OUT I2S)
     set(FS_I2S_DATA_PIN 26)
     set(FS_I2S_CLOCK_PIN_BASE 27)
+    set(FS_I2S_MCLK_PIN -1)
 endif()
-message(STATUS "pico-fsynth: ${PICO_BOARD}, ${FS_AUDIO_OUT}, I2S data ${FS_I2S_DATA_PIN} clocks ${FS_I2S_CLOCK_PIN_BASE}/+1")
+if(FS_PICO_AUDIO_V21)
+    set(FS_AUDIO_OUT I2S)
+    set(FS_I2S_DATA_PIN 22)
+    set(FS_I2S_CLOCK_PIN_BASE 27)
+    set(FS_I2S_MCLK_PIN 26)
+endif()
+if(FS_I2S_MCLK_PIN GREATER_EQUAL 0)
+    message(STATUS "pico-fsynth: ${PICO_BOARD}, ${FS_AUDIO_OUT}, I2S data ${FS_I2S_DATA_PIN} LRCLK ${FS_I2S_CLOCK_PIN_BASE} BCLK +1 MCLK ${FS_I2S_MCLK_PIN}")
+else()
+    message(STATUS "pico-fsynth: ${PICO_BOARD}, ${FS_AUDIO_OUT}, I2S data ${FS_I2S_DATA_PIN} BCLK ${FS_I2S_CLOCK_PIN_BASE} LRCLK +1")
+endif()
 
 set(FS_DEMO_MIDI "" CACHE FILEPATH "Optional MIDI file embedded and played at boot until MIDI input arrives")
 
@@ -83,7 +100,11 @@ endif()
 
 if(FS_AUDIO_OUT STREQUAL "I2S")
     target_sources(pico_fsynth PRIVATE ${FS_FW_DIR}/audio_i2s.c)
-    pico_generate_pio_header(pico_fsynth ${FS_FW_DIR}/audio_i2s.pio)
+    if(FS_I2S_MCLK_PIN GREATER_EQUAL 0)
+        pico_generate_pio_header(pico_fsynth ${FS_FW_DIR}/audio_i2s_mclk.pio)
+    else()
+        pico_generate_pio_header(pico_fsynth ${FS_FW_DIR}/audio_i2s.pio)
+    endif()
     target_link_libraries(pico_fsynth hardware_pio)
 elseif(FS_AUDIO_OUT STREQUAL "PWM")
     target_sources(pico_fsynth PRIVATE ${FS_FW_DIR}/audio_pwm.c)
@@ -115,6 +136,7 @@ target_compile_definitions(pico_fsynth PRIVATE
     FS_FONT_FLASH_OFFSET=${FS_FONT_FLASH_OFFSET}
     FS_I2S_DATA_PIN=${FS_I2S_DATA_PIN}
     FS_I2S_CLOCK_PIN_BASE=${FS_I2S_CLOCK_PIN_BASE}
+    FS_I2S_MCLK_PIN=${FS_I2S_MCLK_PIN}
     FS_PWM_PIN_L=${FS_PWM_PIN_L}
     FS_PWM_PIN_R=${FS_PWM_PIN_R}
     FS_MIDI_UART_RX_PIN=${FS_MIDI_UART_RX_PIN}

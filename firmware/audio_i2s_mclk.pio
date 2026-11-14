@@ -1,0 +1,91 @@
+;
+; audio_i2s_mclk.pio - I2S transmitter with MCLK, for DACs that need a
+; master clock such as the CS4344 on the Waveshare Pico-Audio Rev2.1.
+; Used by audio_i2s.c when FS_I2S_MCLK_PIN >= 0.
+;
+; Two programs, run on two state machines of the same PIO, started together:
+;
+; audio_i2s_mclk_data: standard (Philips) I2S, 16-bit samples in 32-bit
+; slots (BCLK = 64 x sample rate, a ratio every I2S DAC accepts, and MCLK /
+; BCLK = 4). Data changes on the falling edge of BCLK and the MSB of each
+; channel follows the LRCLK edge by one bit; the 15 bits after the LSB, and
+; the delay bit, are zero. LRCLK low is the left channel, high the right.
+;
+; Side-set pins: LRCLK = base, BCLK = base + 1 (note: the reverse of
+; audio_i2s.pio, to match the Pico-Audio Rev2.1 wiring LRCK 27, SCLK 28).
+; Data on the OUT pin. Each 32-bit FIFO word is one frame, shifted out MSB
+; first: the upper 16 bits (right channel of a little-endian int16 L,R
+; pair) go out first, with LRCLK high, then the lower 16 with LRCLK low.
+; Two PIO cycles per bit, so the state machine runs at 128 x sample rate.
+;
+; audio_i2s_mclk_clock: a square wave on its side-set pin, one period per
+; two PIO cycles. Run at 4 x the data machine's clock it gives MCLK =
+; 256 x sample rate (11.2896 MHz at 44.1 kHz).
+;
+.program audio_i2s_mclk_data
+.side_set 2
+                        ;        /--- BCLK
+                        ;        |/-- LRCLK
+                        ;        ||          right channel (LRCLK high)
+    mov pins, null      side 0b01           ; delay bit (left channel padding)
+    set x, 14           side 0b11
+rbits:
+    out pins, 1         side 0b01           ; bits 15..1
+    jmp x-- rbits       side 0b11
+    out pins, 1         side 0b01           ; bit 0
+    set x, 14           side 0b11
+rpad:
+    mov pins, null      side 0b01           ; 15 zero bits
+    jmp x-- rpad        side 0b11
+                        ;                    left channel (LRCLK low)
+    mov pins, null      side 0b00           ; delay bit (right channel padding)
+    set x, 14           side 0b10
+lbits:
+    out pins, 1         side 0b00
+    jmp x-- lbits       side 0b10
+    out pins, 1         side 0b00
+    set x, 14           side 0b10
+lpad:
+    mov pins, null      side 0b00
+    jmp x-- lpad        side 0b10           ; then wraps to the right channel
+
+.program audio_i2s_mclk_clock
+.side_set 1
+    nop                 side 1
+    nop                 side 0
+
+% c-sdk {
+#include "hardware/gpio.h"
+
+// Configure state machine `sm` (audio_i2s_mclk_data loaded at `offset`):
+// data on data_pin, LRCLK on clock_pin_base and BCLK on clock_pin_base + 1.
+// Sets the pins to outputs driven low and joins the FIFOs into an 8-word TX
+// FIFO. Does not set the clock divider or enable the state machine.
+static inline void audio_i2s_mclk_data_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clock_pin_base) {
+    pio_sm_config c = audio_i2s_mclk_data_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_sideset_pins(&c, clock_pin_base);
+    sm_config_set_out_shift(&c, false, true, 32);  // MSB first, autopull 32 bits
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    pio_sm_init(pio, sm, offset, &c);
+
+    const uint32_t pins = (1u << data_pin) | (3u << clock_pin_base);
+    pio_sm_set_pindirs_with_mask(pio, sm, pins, pins);
+    pio_sm_set_pins_with_mask(pio, sm, 0, pins);
+    pio_gpio_init(pio, data_pin);
+    pio_gpio_init(pio, clock_pin_base);
+    pio_gpio_init(pio, clock_pin_base + 1);
+}
+
+// Configure state machine `sm` (audio_i2s_mclk_clock loaded at `offset`)
+// to drive MCLK on mclk_pin. Does not set the clock divider or enable it.
+static inline void audio_i2s_mclk_clock_program_init(PIO pio, uint sm, uint offset, uint mclk_pin) {
+    pio_sm_config c = audio_i2s_mclk_clock_program_get_default_config(offset);
+    sm_config_set_sideset_pins(&c, mclk_pin);
+    pio_sm_init(pio, sm, offset, &c);
+
+    pio_sm_set_pindirs_with_mask(pio, sm, 1u << mclk_pin, 1u << mclk_pin);
+    pio_sm_set_pins_with_mask(pio, sm, 0, 1u << mclk_pin);
+    pio_gpio_init(pio, mclk_pin);
+}
+%}

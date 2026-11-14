@@ -117,6 +117,21 @@ cmake -S . -B build-plus-audio -DFS_PICO_AUDIO=ON
 cmake --build build-plus-audio
 ```
 
+The Rev2.1 board uses a CS4344 DAC on different pins: DIN 22, MCLK 26,
+LRCK 27, SCLK 28. The CS4344 needs a master clock, so `-DFS_PICO_AUDIO_V21=ON`
+selects those pins and a second PIO program (`firmware/audio_i2s_mclk.pio`).
+That program runs two state machines in sync: MCLK = 256 x Fs (11.29 MHz at
+44.1 kHz), and BCLK = 64 x Fs with 16-bit samples in 32-bit slots:
+
+```sh
+cmake -S . -B build-plus-audio21 -DFS_PICO_AUDIO_V21=ON
+cmake --build build-plus-audio21
+```
+
+For other wiring, set `-DFS_I2S_MCLK_PIN=n` yourself. With MCLK on,
+`FS_I2S_CLOCK_PIN_BASE` is the LRCLK pin and BCLK is the next GPIO. This is
+the reverse of the order without MCLK.
+
 The Pico-Audio takes its power from VSYS, so USB powering the Pico is enough.
 GPIO 5 (MIDI in) is not used by the Pico-Audio.
 

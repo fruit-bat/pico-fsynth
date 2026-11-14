@@ -1,0 +1,58 @@
+menu "pico-fsynth"
+
+    config FSYNTH_SAMPLE_RATE
+        int "Output sample rate (Hz)"
+        default 44100
+
+    config FSYNTH_MAX_VOICES
+        int "Maximum simultaneous voices"
+        range 1 248
+        default 80
+
+    config FSYNTH_DUAL_CORE
+        bool "Render voices on both cores"
+        default y
+
+    config FSYNTH_FONT_IN_PSRAM
+        bool "Copy the font from flash into PSRAM at boot"
+        default n
+        help
+            Off: the font is read in place from flash through the cache
+            (memory mapped, like XIP on the Pico). On: it is copied into
+            PSRAM at boot, which takes a second or two but may be faster.
+
+    config FSYNTH_FP_CONTRACT
+        bool "Allow fused multiply-add in the synth core"
+        default n
+        help
+            The RP2350 measured faster with it off. Benchmark it here.
+
+    config FSYNTH_I2S_DIN_PIN
+        int "I2S data (DIN) GPIO"
+        default 23
+        help
+            Defaults: Waveshare Pico-Audio stacked on the P4-Pico
+            (DIN 23, BCK 22, LRCK 21).
+
+    config FSYNTH_I2S_BCK_PIN
+        int "I2S bit clock (BCK) GPIO"
+        default 22
+
+    config FSYNTH_I2S_WS_PIN
+        int "I2S word clock (LRCK) GPIO"
+        default 21
+
+    config FSYNTH_I2S_MCLK_PIN
+        int "I2S MCLK GPIO, -1 for none"
+        default -1
+        help
+            PCM510x DACs make their own MCLK from BCK; leave at -1.
+
+    config FSYNTH_MIDI_UART_RX_PIN
+        int "MIDI in (UART RX) GPIO, -1 for none"
+        default 20
+        help
+            31250 baud from an opto-isolated MIDI input. GPIO 20 is
+            physical pin 35, not used by a stacked Pico-Audio.
+
+endmenu

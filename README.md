@@ -6,6 +6,7 @@ SoundFont 2 MIDI synthesizer for the RP2350 (target: Waveshare RP2350-Plus, 16 M
 
 - `core/` portable synth: font reader, voices, effects, MIDI file player
 - `firmware/` RP2350 specific: audio output (I2S / PWM), MIDI input (UART / USB), main
+- `esp32p4/` ESP32-P4 port (ESP-IDF); see `esp32p4/README.md` for installing ESP-IDF
 - `host/` PC tools: font converter, font inspector, MIDI to WAV renderer, test scripts
 - `tests/` automated tests of the core, the firmware's MIDI parsers and the host tools
 

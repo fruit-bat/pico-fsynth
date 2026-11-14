@@ -95,24 +95,32 @@
 #define FS_RENDER_EFFECTS_VOICES 4
 #endif
 
-// Place time critical functions in RAM on the Pico. Wrap the function name
-// in a definition: void FS_RAM_FUNC(name)(args) { ... }. Code in RAM does
-// not stall on flash cache misses, and keeps running while flash is being
-// written. A no-op on the host.
+// Place time critical functions in RAM on the Pico (and in internal RAM,
+// IRAM, on the ESP32). Wrap the function name in a definition:
+// void FS_RAM_FUNC(name)(args) { ... }. Code in RAM does not stall on flash
+// cache misses, and keeps running while flash is being written. A no-op on
+// the host.
 #ifdef PICO_ON_DEVICE
 #include "pico.h"
 #define FS_RAM_FUNC(f) __not_in_flash_func(f)
+#elif defined(ESP_PLATFORM)
+#include "esp_attr.h"
+#define FS_RAM_FUNC(f) IRAM_ATTR f
 #else
 #define FS_RAM_FUNC(f) f
 #endif
 
 // CPU cycle counter for profiling (the DWT counter on the M33, which the
-// firmware enables on each core). Always 0 on the host, so the profiling
-// counters in FsSynthStats stay at 0 there.
+// firmware enables on each core; the per-core cycle CSR on the ESP32).
+// Always 0 on the host, so the profiling counters in FsSynthStats stay at 0
+// there.
 #ifndef FS_CYCLE_COUNT
 #if defined(PICO_ON_DEVICE) && PICO_RP2350
 #include "hardware/structs/m33.h"
 #define FS_CYCLE_COUNT() (m33_hw->dwt_cyccnt)
+#elif defined(ESP_PLATFORM)
+#include "esp_cpu.h"
+#define FS_CYCLE_COUNT() ((uint32_t)esp_cpu_get_cycle_count())
 #else
 #define FS_CYCLE_COUNT() 0u
 #endif

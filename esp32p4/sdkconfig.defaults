@@ -1,0 +1,26 @@
+# pico-fsynth on the Waveshare ESP32-P4-Pico. Applied when sdkconfig is
+# first created; delete sdkconfig (or run `idf.py fullclean`) to re-apply.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# The board's chip is revision v1.3. ESP-IDF 6.1 defaults to v3.1 or later
+# and refuses to boot older chips. Remove these two lines for a v3 chip.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# 32 MB flash; the partition table puts the font at 2 MB
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# 32 MB PSRAM in the package
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# Speed over size, as for the RP2350 firmware
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# The render task is busy most of the time; it blocks only in the I2S write
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+CONFIG_FREERTOS_HZ=1000

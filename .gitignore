@@ -4,3 +4,4 @@ build-*/
 .vscode/
 **/*.sf2
 __pycache__/
+sdkconfig.old

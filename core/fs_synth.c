@@ -221,7 +221,14 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
         s->voices[i].stream.ring = s->rings[i];
     }
     for (uint8_t c = 0; c < FS_MIDI_CHANNELS; ++c) channel_init(s, c);
-    const uint32_t indexed = font->header->region_count < FS_REGION_INDEX_SIZE ? font->header->region_count : FS_REGION_INDEX_SIZE;
+#if FS_REGION_INDEX_EXTERNAL
+    if (!s->region_index) s->region_index = FS_EXTERNAL_ALLOC(FS_REGION_INDEX_SIZE * sizeof(FsRegionIndexEntry));  // Once
+#else
+    s->region_index = s->region_index_mem;
+#endif
+    uint32_t indexed = font->header->region_count < FS_REGION_INDEX_SIZE ? font->header->region_count : FS_REGION_INDEX_SIZE;
+    if (!s->region_index) indexed = 0;
+    s->region_indexed = indexed;
     for (uint32_t i = 0; i < indexed; ++i) {
         const FsRegion *r = &font->regions[i];
         s->region_index[i].key_lo = r->key_lo;
@@ -236,7 +243,7 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
     memset(s->send_chorus, 0, sizeof(s->send_chorus));
 #if FS_ENABLE_REVERB
 #if FS_EFFECTS_EXTERNAL
-    if (!s->reverb) s->reverb = FS_EFFECTS_ALLOC(sizeof(FsReverb));  // Once; kept on re-init
+    if (!s->reverb) s->reverb = FS_EXTERNAL_ALLOC(sizeof(FsReverb));  // Once; kept on re-init
 #else
     s->reverb = &s->reverb_mem;
 #endif
@@ -244,7 +251,7 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
 #endif
 #if FS_ENABLE_CHORUS
 #if FS_EFFECTS_EXTERNAL
-    if (!s->chorus) s->chorus = FS_EFFECTS_ALLOC(sizeof(FsChorus));
+    if (!s->chorus) s->chorus = FS_EXTERNAL_ALLOC(sizeof(FsChorus));
 #else
     s->chorus = &s->chorus_mem;
 #endif
@@ -332,7 +339,7 @@ void FS_RAM_FUNC(fs_synth_note_on)(FsSynth *s, uint8_t chan, uint8_t key, uint8_
     for (uint32_t r = 0; r < preset->region_count; ++r) {
         const uint32_t ri = preset->region_first + r;
         uint8_t xc;
-        if (ri < FS_REGION_INDEX_SIZE) {
+        if (ri < s->region_indexed) {
             const uint8_t *e = &s->region_index[ri].key_lo;
             if (key < e[0] || key > e[1] || vel < e[2] || vel > e[3]) continue;
             xc = s->region_index[ri].exclusive_class;

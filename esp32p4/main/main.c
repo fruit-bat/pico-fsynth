@@ -16,7 +16,8 @@
 //
 // Start up: the font is found in the "font" partition (partitions.csv) and
 // either memory mapped (read through the flash cache, like XIP on the Pico)
-// or copied into PSRAM (FSYNTH_FONT_IN_PSRAM). Without a usable font the
+// or copied into PSRAM (FSYNTH_FONT_IN_PSRAM, or automatically when it
+// reaches past the first 16 MB of flash). Without a usable font the
 // firmware only prints the reason every 2 s. A demo song (FS_DEMO_MIDI)
 // plays until live MIDI arrives; without one a short arpeggio confirms
 // audio.
@@ -47,12 +48,17 @@
 #include "fs_font.h"
 #include "fs_synth.h"
 #include "fs_smf.h"
+#include "fs_codec.h"
 #include "audio_i2s.h"
 #include "midi_in.h"
 #include "console.h"
 #include "settings.h"
 #if CONFIG_FSYNTH_USB_MIDI
 #include "usb_midi.h"
+#endif
+
+#ifndef CONFIG_FSYNTH_FONT_IN_PSRAM
+#define CONFIG_FSYNTH_FONT_IN_PSRAM 0
 #endif
 
 #ifdef CONFIG_FSYNTH_FP_CONTRACT
@@ -207,6 +213,43 @@ static void render_task(void *arg) {
     }
 }
 
+// The `codec` console command: time reading sample data the way the
+// streamer does, in 128-frame chunks. "cold" reads the first 1M frames once
+// (flash cache misses included); "warm" reads the first 4096 frames 64
+// times (in cache, decode cost only). The scheduler on this core is
+// suspended meanwhile, so the audio may underrun for a moment.
+static void codec_bench(void) {
+    static int16_t buf[4096];
+    const bool rice = font.data_format == FS_DATA_RICE;
+    const uint32_t total = font.header->data_frames;
+    const uint32_t cold = total < (1u << 20) ? total : (1u << 20);
+    const uint32_t warm = total < 4096 ? total : 4096;
+    FsDecoder d;
+    vTaskSuspendAll();
+    uint32_t c0 = FS_CYCLE_COUNT();
+    if (rice) fs_decoder_seek(&d, font.cdata, font.data_size, 0);
+    for (uint32_t pos = 0; pos < cold; pos += 128) {
+        const uint32_t n = cold - pos < 128 ? cold - pos : 128;
+        if (rice) fs_decoder_read(&d, buf, n);
+        else memcpy(buf, font.data + pos, n * sizeof(int16_t));
+    }
+    const uint32_t c_cold = FS_CYCLE_COUNT() - c0;
+    c0 = FS_CYCLE_COUNT();
+    for (int r = 0; r < 64; ++r) {
+        if (rice) fs_decoder_seek(&d, font.cdata, font.data_size, 0);
+        for (uint32_t pos = 0; pos < warm; pos += 128) {
+            const uint32_t n = warm - pos < 128 ? warm - pos : 128;
+            if (rice) fs_decoder_read(&d, buf + pos, n);
+            else memcpy(buf + pos, font.data + pos, n * sizeof(int16_t));
+        }
+    }
+    const uint32_t c_warm = FS_CYCLE_COUNT() - c0;
+    xTaskResumeAll();
+    printf("codec: %s, %s: cold %.1f cycles/frame (%lu frames), warm %.1f cycles/frame\n",
+           rice ? "compressed" : "plain PCM", font_where, (double)c_cold / cold, (unsigned long)cold,
+           (double)c_warm / (64.0 * warm));
+}
+
 static uint32_t active_voices(void) {
     return fs_synth_active_voices(&synth);
 }
@@ -219,9 +262,16 @@ static void midi_sleep_ms(uint32_t ms) {
     }
 }
 
+// Memory mapping only reaches the first 16 MB of flash (beyond needs an
+// experimental ESP-IDF option), so a font ending above it is copied to
+// PSRAM instead; ordinary flash reads work across the whole chip.
+#define FLASH_MMAP_LIMIT (16u * 1024 * 1024)
+
 // Find the font partition and attach the font: mapped in place, or copied
-// to PSRAM. Returns the result of fs_font_init (or FS_FONT_ERR_SIZE if the
-// partition is missing or cannot be mapped).
+// to PSRAM if FSYNTH_FONT_IN_PSRAM is set or the font reaches past
+// FLASH_MMAP_LIMIT. Returns the result of fs_font_init (or
+// FS_FONT_ERR_SIZE if the partition is missing, or the font can be neither
+// copied nor mapped).
 static FsFontResult attach_font(void) {
     const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, FONT_SUBTYPE, "font");
     if (!part) return FS_FONT_ERR_SIZE;
@@ -230,23 +280,33 @@ static FsFontResult attach_font(void) {
     FsFontHeader h;
     if (esp_partition_read(part, 0, &h, sizeof(h)) != ESP_OK) return FS_FONT_ERR_SIZE;
     if (h.magic != FS_FONT_MAGIC) return FS_FONT_ERR_MAGIC;
-    if (h.total_size > part->size || h.total_size < sizeof(h)) return FS_FONT_ERR_SIZE;
+    if (h.total_size > part->size || h.total_size < FS_FONT_HEADER_V1_SIZE) return FS_FONT_ERR_SIZE;
     const size_t size = h.total_size;
+    const bool mappable = part->address + size <= FLASH_MMAP_LIMIT;
 
-#if CONFIG_FSYNTH_FONT_IN_PSRAM
-    void *ram = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (ram) {
-        const int64_t t0 = esp_timer_get_time();
-        if (esp_partition_read(part, 0, ram, size) == ESP_OK) {
-            printf("font copied to PSRAM in %lld ms\n", (long long)((esp_timer_get_time() - t0) / 1000));
-            font_where = "PSRAM";
-            // In RAM the data CRC is cheap to check
-            return fs_font_init(&font, ram, size, true, true);
+    if (CONFIG_FSYNTH_FONT_IN_PSRAM || !mappable) {
+        void *ram = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (ram) {
+            const int64_t t0 = esp_timer_get_time();
+            if (esp_partition_read(part, 0, ram, size) == ESP_OK) {
+                printf("font: %u bytes copied to PSRAM in %lld ms\n", (unsigned)size,
+                       (long long)((esp_timer_get_time() - t0) / 1000));
+                font_where = "PSRAM";
+                // In RAM the data CRC is cheap to check
+                const FsFontResult res = fs_font_init(&font, ram, size, true, true);
+                if (res == FS_FONT_OK) return res;
+                heap_caps_free(ram);    // Retried later: do not leak the copy
+                return res;
+            }
+            heap_caps_free(ram);
         }
-        heap_caps_free(ram);
+        if (!mappable) {
+            printf("font: %u bytes do not fit in PSRAM (%u free) and reach past the first 16 MB of flash\n",
+                   (unsigned)size, (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            return FS_FONT_ERR_SIZE;
+        }
+        printf("font: could not copy to PSRAM, reading it from flash\n");
     }
-    printf("font: could not copy to PSRAM, reading it from flash\n");
-#endif
     const void *map;
     esp_partition_mmap_handle_t handle;
     if (esp_partition_mmap(part, 0, size, ESP_PARTITION_MMAP_DATA, &map, &handle) != ESP_OK) {
@@ -375,7 +435,7 @@ void app_main(void) {
         midi_in_inject(off, 3);
     }
 
-    console_init(active_voices);
+    console_init(active_voices, codec_bench);
     const float buffer_us = (float)AUDIO_FRAMES * 1e6f / (float)FS_SAMPLE_RATE;
     int64_t next_report = esp_timer_get_time() + 1000000;
     for (;;) {

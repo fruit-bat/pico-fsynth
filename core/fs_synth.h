@@ -53,6 +53,11 @@ typedef struct {
     uint32_t start_count;
 } FsSynthStats;
 
+// One region in the note-on index (FsSynth.region_index)
+typedef struct {
+    uint8_t key_lo, key_hi, vel_lo, vel_hi, exclusive_class;
+} FsRegionIndexEntry;
+
 // The whole synthesizer state. Treat it as opaque except stats and the
 // documented setters; fields are public only so it can be allocated
 // statically.
@@ -82,9 +87,14 @@ typedef struct {
     float declick_decay;                // Per-sample decay factor (1 ms time constant)
     uint32_t serial;                    // Last voice serial handed out
 
-    // Key and velocity ranges and exclusive class of the font's regions,
-    // in RAM (see FS_REGION_INDEX_SIZE)
-    struct { uint8_t key_lo, key_hi, vel_lo, vel_hi, exclusive_class; } region_index[FS_REGION_INDEX_SIZE];
+    // Key and velocity ranges and exclusive class of the font's first
+    // region_indexed regions, in RAM (see FS_REGION_INDEX_SIZE): inline, or
+    // allocated by fs_synth_init when FS_REGION_INDEX_EXTERNAL
+    FsRegionIndexEntry *region_index;
+    uint32_t region_indexed;
+#if !FS_REGION_INDEX_EXTERNAL
+    FsRegionIndexEntry region_index_mem[FS_REGION_INDEX_SIZE];
+#endif
 
     // Active voices per channel and key, for the voice stealing policy
     uint8_t key_voices[FS_MIDI_CHANNELS][128];

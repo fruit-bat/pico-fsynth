@@ -23,8 +23,17 @@ menu "pico-fsynth"
         default n
         help
             Off: the font is read in place from flash through the cache
-            (memory mapped, like XIP on the Pico). On: it is copied into
-            PSRAM at boot, which takes a second or two but may be faster.
+            (memory mapped, like XIP on the Pico), unless it reaches past
+            the first 16 MB of flash, which cannot be mapped: then it is
+            copied anyway. On: always copied into PSRAM at boot.
+
+    config FSYNTH_REGION_INDEX_SIZE
+        int "Font regions indexed in internal RAM"
+        default 16384
+        help
+            Key and velocity ranges of this many regions are kept in
+            internal RAM (5 bytes each), so a note-on does not read region
+            records from the font. GeneralUser GS has 12618 regions.
 
     config FSYNTH_EFFECTS_IN_PSRAM
         bool "Put the reverb and chorus memory in PSRAM"

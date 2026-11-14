@@ -76,18 +76,33 @@ applied only when `sdkconfig` is first created. After editing
 
 ### The font
 
-The compiled font goes in the `font` partition at 0x200000 (14 MB, see
-`partitions.csv`). Build it on the PC (see the main README), then write it
-once. `idf.py flash` leaves it alone. Without `-b` esptool runs at 115200
-baud, and the font takes about 7 minutes instead of 45 seconds:
+The compiled font goes in the `font` partition at 0x110000, which fills the
+rest of the flash: 30.9 MB (see `partitions.csv`). Build it on the PC (see
+the main README), then write it once. `idf.py flash` leaves it alone.
+Without `-b` esptool runs at 115200 baud and takes about 15 times longer:
 
 ```sh
-esptool --port /dev/ttyACM0 -b 2000000 write-flash 0x200000 ../build-host/TimGM6mb.fsf
+esptool --port /dev/ttyACM0 -b 2000000 write-flash 0x110000 ../build-host/TimGM6mb.fsf
 ```
 
-By default the font is read in place from flash through the cache, like
-XIP on the Pico. The "Copy the font from flash into PSRAM" option copies
-it into PSRAM at boot instead. The status line shows which.
+| Font | Size | Writing at 2,000,000 baud |
+|---|---|---|
+| TimGM6mb | 6.1 MB | about 45 s |
+| GeneralUser GS 2.0.3, `sf2conv --compress` | 27.1 MB | about 4 min |
+
+Where the font is read from at run time:
+- **Fonts ending below 16 MB of flash** (up to 14.9 MB) are read in place
+  through the flash cache, like XIP on the Pico.
+- **Bigger fonts** are copied into PSRAM at boot. ESP-IDF can only
+  memory-map the first 16 MB of flash, but ordinary reads reach all of it.
+  The copy takes about 3 s for GeneralUser GS. PSRAM has about 33 MB free,
+  so fonts up to about 31 MB fit, which in practice means compressed ones.
+  GeneralUser GS is 34 MB uncompressed.
+- The "Copy the font from flash into PSRAM" menuconfig option always
+  copies it.
+
+The boot log and the status line show which. The region index (the key
+and velocity ranges checked at note-on) holds 16,384 regions, in PSRAM.
 
 ## Audio: Waveshare Pico-Audio (PCM5101A) stacked
 
@@ -224,6 +239,31 @@ absorbed. That is why the default is 128.
   measurable CPU difference with nothing plugged in: 81.4% / 76% at 128
   voices with or without it. It has not yet been measured with a host
   sending MIDI.
+- **Flash speed:** the flash runs at 80 MHz. ESP-IDF's default for
+  chips older than v1.0 is 40 MHz, so `sdkconfig.defaults` sets the
+  minimum chip revision to v1.0. Reading samples from cold flash (not in
+  cache) takes 25.7 cycles per frame at 80 MHz, against 46.7 at 40 MHz.
+  The `codec` console command measures this.
+- **Compressed fonts** (`sf2conv --compress`): measured with `codec`, at
+  80 MHz flash, in cycles per frame:
+
+  | Font | Cold | Warm (in cache) |
+  |---|---|---|
+  | TimGM6mb, uncompressed | 25.7 | 2.0 |
+  | TimGM6mb, `--compress=fast` | 36.2 | 24.1 |
+  | TimGM6mb, `--compress=small` | about 60 | 49.6 |
+
+  Compressed data cuts flash traffic by about half, but decoding costs
+  more than that saves. At 128 voices, fast compression needs 99.8 cycles
+  per voice-sample (86% load) against 94.5 (82%) uncompressed. The demo
+  song needs about 116 against 102.
+- **GeneralUser GS 2.0.3** (fast compressed, copied to PSRAM):
+  - 128 voices: 103.9 cycles per voice-sample, 89.7% / 84% load.
+  - Demo song: about 125 cycles. Its voices cost more than TimGM6mb's in
+    the sample loop itself (74.7 against 69.5 cycles), which is the font,
+    not the compression.
+  - Reading compressed data from PSRAM costs 28.2 cycles per frame cold
+    and 25.0 warm, so PSRAM adds almost nothing over the decoding.
 - **Font in PSRAM:** reading samples from flash costs under 1 cycle per
   voice-sample, so copying the font to PSRAM has little to gain.
 

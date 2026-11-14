@@ -350,7 +350,7 @@ void FS_RAM_FUNC(fs_voice_start)(FsVoice *v, const FsFont *font, const FsRegion 
     v->region = region;
     v->mods = fs_font_region_mods(font, region);
 
-    fs_stream_start(&v->stream, font->data, region->start, region->end,
+    fs_stream_start(&v->stream, font, region->start, region->end,
                     region->loop_start, region->loop_end, region->loop_mode != FS_LOOP_NONE);
     v->pos = 1;
     v->frac = 0;

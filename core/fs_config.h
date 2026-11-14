@@ -83,12 +83,19 @@
 
 #define FS_TOTAL_VOICES (FS_MAX_VOICES + FS_STEAL_RESERVE)
 
-// Reverb and chorus state (about 70 KB at 48 kHz). 0: inside FsSynth.
-// 1: allocated once by fs_synth_init with FS_EFFECTS_ALLOC(bytes), e.g. in
-// slower external RAM, to leave internal RAM for voices. If the allocation
-// fails the effects are skipped.
+// Large buffers that are not touched per sample can live outside FsSynth,
+// allocated once by fs_synth_init with FS_EXTERNAL_ALLOC(bytes), e.g. in
+// slower external RAM, to leave internal RAM for voices. 0: inside FsSynth.
+//   FS_EFFECTS_EXTERNAL       reverb and chorus state (about 70 KB at
+//                             48 kHz); skipped if the allocation fails
+//   FS_REGION_INDEX_EXTERNAL  the region index (5 bytes per region, read at
+//                             note-on); note-ons read the font's region
+//                             records instead if the allocation fails
 #ifndef FS_EFFECTS_EXTERNAL
 #define FS_EFFECTS_EXTERNAL 0
+#endif
+#ifndef FS_REGION_INDEX_EXTERNAL
+#define FS_REGION_INDEX_EXTERNAL 0
 #endif
 
 // Voice rendering can be split into this many parts, one per core
@@ -114,9 +121,9 @@
 #elif defined(ESP_PLATFORM)
 #include "esp_attr.h"
 #define FS_RAM_FUNC(f) IRAM_ATTR f
-#if FS_EFFECTS_EXTERNAL && !defined(FS_EFFECTS_ALLOC)
+#if (FS_EFFECTS_EXTERNAL || FS_REGION_INDEX_EXTERNAL) && !defined(FS_EXTERNAL_ALLOC)
 #include "esp_heap_caps.h"
-#define FS_EFFECTS_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define FS_EXTERNAL_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #endif
 #else
 #define FS_RAM_FUNC(f) f
@@ -138,9 +145,9 @@
 #endif
 #endif
 
-#if FS_EFFECTS_EXTERNAL && !defined(FS_EFFECTS_ALLOC)
+#if (FS_EFFECTS_EXTERNAL || FS_REGION_INDEX_EXTERNAL) && !defined(FS_EXTERNAL_ALLOC)
 #include <stdlib.h>
-#define FS_EFFECTS_ALLOC(n) malloc(n)
+#define FS_EXTERNAL_ALLOC(n) malloc(n)
 #endif
 
 #define FS_MIDI_CHANNELS 16

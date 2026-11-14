@@ -10,9 +10,9 @@
 
 // See fs_stream.h. Writes virtual frame 0 (a zero frame) and its guard
 // copy, so the first cubic interpolation reads a 0 before the sample.
-void FS_RAM_FUNC(fs_stream_start)(FsStream *s, const int16_t *data, uint32_t start, uint32_t end,
+void FS_RAM_FUNC(fs_stream_start)(FsStream *s, const FsFont *font, uint32_t start, uint32_t end,
                                   uint32_t loop_start, uint32_t loop_end, bool looping) {
-    s->data = data;
+    s->font = font;
     s->src = start;
     s->end = end;
     s->loop_start = loop_start;
@@ -20,6 +20,13 @@ void FS_RAM_FUNC(fs_stream_start)(FsStream *s, const int16_t *data, uint32_t sta
     s->looping = looping && loop_end > loop_start;
     s->src_done = false;
     s->end_vpos = 0;
+    if (font->data_format == FS_DATA_RICE) {
+        uint32_t off = 0;
+        fs_font_seek(font, start, &off);
+        fs_decoder_seek(&s->dec, font->cdata, font->data_size, off);
+        s->loop_offset = 0;
+        if (s->looping && !fs_font_seek(font, loop_start, &s->loop_offset)) s->looping = false;
+    }
     s->ring[0] = 0; // Virtual frame 0
     s->ring[FS_STREAM_FRAMES] = 0;
     s->filled = 1;
@@ -53,13 +60,17 @@ void FS_RAM_FUNC(fs_stream_fill)(FsStream *s, uint32_t playhead, uint32_t frames
         const uint32_t avail = run_end - s->src;
         if (chunk > avail) chunk = avail;
 
-        memcpy(&s->ring[ring_pos], &s->data[s->src], chunk * sizeof(int16_t));
+        if (s->font->data_format == FS_DATA_RICE) fs_decoder_read(&s->dec, &s->ring[ring_pos], chunk);
+        else memcpy(&s->ring[ring_pos], &s->font->data[s->src], chunk * sizeof(int16_t));
         s->src += chunk;
         s->filled += chunk;
 
         if (s->src >= run_end) {
             if (s->looping) {
                 s->src = s->loop_start;
+                if (s->font->data_format == FS_DATA_RICE) {
+                    fs_decoder_seek(&s->dec, s->font->cdata, s->font->data_size, s->loop_offset);
+                }
             } else {
                 s->src_done = true;
                 s->end_vpos = s->filled;

@@ -6,6 +6,7 @@
 //                 (program P, default 16 = Organ 1, on channels 1-9 and 11-16)
 //   off           all sound off on every channel
 //   reset         GM reset (programs, controllers, sound off)
+//   codec         time sample decoding (or copying, for a plain font)
 //   help          list the commands
 //
 // Commands go through the MIDI queue (midi_in_inject), so they behave
@@ -34,13 +35,15 @@
 #define CONSOLE_UART CONFIG_ESP_CONSOLE_UART_NUM
 
 static uint32_t (*voices)(void);
+static void (*bench)(void);
 static char line[64];
 static unsigned line_len;
 static unsigned midi_left;      // Data bytes still due for the current MIDI message
 static bool in_sysex;
 
-void console_init(uint32_t (*active_voices)(void)) {
+void console_init(uint32_t (*active_voices)(void), void (*codec_bench)(void)) {
     voices = active_voices;
+    bench = codec_bench;
     // Interrupt driven receive with a 1 KB buffer, so MIDI bursts are not
     // lost between polls; printf keeps working through the driver
     uart_driver_install(CONSOLE_UART, 1024, 0, 0, NULL, 0);
@@ -105,8 +108,10 @@ static void run(char *cmd) {
         const uint8_t r = MIDI_MSG_RESET;
         midi_in_inject(&r, 1);
         printf("reset\n");
+    } else if (!strcmp(cmd, "codec")) {
+        bench();
     } else if (!strcmp(cmd, "help")) {
-        printf("commands: stress VOICES [PROGRAM], off, reset, help\n");
+        printf("commands: stress VOICES [PROGRAM], off, reset, codec, help\n");
     } else if (cmd[0]) {
         printf("unknown command '%s' (try help)\n", cmd);
     }

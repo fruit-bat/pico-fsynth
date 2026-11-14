@@ -7,6 +7,10 @@ CONFIG_IDF_TARGET="esp32p4"
 # and refuses to boot older chips. Remove these two lines for a v3 chip.
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+# Minimum revision v1.0 (the board has v1.3): v0.x would limit the flash
+# to 40 MHz, and the font is read from flash
+CONFIG_ESP32P4_REV_MIN_100=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
 # 32 MB flash; the partition table puts the font at 2 MB
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y

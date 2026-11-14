@@ -1,9 +1,10 @@
 # pico-fsynth ESP32-P4 partition table.
 # The compiled font (.fsf) is written to the "font" partition separately
-# (see README.md); `idf.py flash` does not touch it. The font partition stays
-# below 16 MB so the flash can be used with 24-bit addressing.
+# (see README.md); `idf.py flash` does not touch it. The font partition fills
+# the rest of the 32 MB flash (30.9 MB). Fonts ending below 16 MB are read in
+# place from flash; bigger ones are copied to PSRAM at boot (main.c).
 # Name,   Type, SubType, Offset,   Size
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
-factory,  app,  factory, 0x10000,  0x1f0000,
-font,     data, 0x40,    0x200000, 0xe00000,
+factory,  app,  factory, 0x10000,  0x100000,
+font,     data, 0x40,    0x110000, 0x1ef0000,

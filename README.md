@@ -26,6 +26,21 @@ cmake --build build-host
 ./build-host/fsfinfo build-host/TimGM6mb.fsf 0 0      # regions of bank 0 program 0
 ```
 
+`sf2conv --compress` stores the samples losslessly compressed (renders are
+bit-identical), in one of two block types:
+
+| Option | TimGM6mb | GeneralUser GS 2.0.3 | Decoding (ESP32-P4, data in cache) |
+|---|---|---|---|
+| (none) | 5.73 MB of samples | 32.0 MB | 2 cycles per frame (a copy) |
+| `--compress` or `--compress=fast` | 87.3% | 78.3% | 24 cycles per frame |
+| `--compress=small` | 81.2% | 71.1% | 50 cycles per frame |
+
+The decoder runs per frame of the original sample, so a note played above
+its sample's pitch costs proportionally more. On the ESP32-P4 at 128 voices,
+fast costs about 6% more CPU than uncompressed. Compression is mainly a
+way to fit bigger fonts. The format is described in `core/fs_codec.h`. The
+firmware still reads version 1 (uncompressed) fonts.
+
 `sf2conv -v` lists warnings about the source font. `--vel-filter=fluid|spec|off`
 chooses how the default "velocity to filter cutoff" modulator behaves:
 `fluid` (default) matches FluidSynth, `spec` follows the SF2 2.01 text (soft

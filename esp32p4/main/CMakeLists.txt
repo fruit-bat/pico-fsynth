@@ -30,6 +30,7 @@ set(FS_CORE_HOT
     ${FS_CORE_DIR}/fs_effects.c
     ${FS_CORE_DIR}/fs_synth.c
     ${FS_CORE_DIR}/fs_stream.c
+    ${FS_CORE_DIR}/fs_codec.c
 )
 
 idf_component_register(
@@ -54,6 +55,7 @@ idf_component_register(
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     FS_SAMPLE_RATE=${CONFIG_FSYNTH_SAMPLE_RATE}
     FS_MAX_VOICES=${CONFIG_FSYNTH_MAX_VOICES}
+    FS_REGION_INDEX_SIZE=${CONFIG_FSYNTH_REGION_INDEX_SIZE}
 )
 if(CONFIG_FSYNTH_USB_MIDI)
     target_sources(${COMPONENT_LIB} PRIVATE usb_midi.c)
@@ -61,6 +63,8 @@ endif()
 if(CONFIG_FSYNTH_EFFECTS_IN_PSRAM)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE FS_EFFECTS_EXTERNAL=1)
 endif()
+# The region index is only read at note-on: PSRAM is fine
+target_compile_definitions(${COMPONENT_LIB} PRIVATE FS_REGION_INDEX_EXTERNAL=1)
 
 # The synth core is float heavy: keep it fast. Fused multiply-add is on by
 # default here (faster on the P4, unlike the RP2350; see Kconfig.projbuild).

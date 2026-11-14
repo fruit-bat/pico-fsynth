@@ -34,11 +34,14 @@ endif()
 
 set(FS_CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/../core)
 
-# Compiled font format: generator tables, CRC and the .fsf reader
+# Compiled font format: generator tables, CRC, the .fsf reader and the
+# sample codec (decoder and, host only, encoder)
 add_library(fs_core_font STATIC
     ${FS_CORE_DIR}/fs_gen.c
     ${FS_CORE_DIR}/fs_crc32.c
     ${FS_CORE_DIR}/fs_font.c
+    ${FS_CORE_DIR}/fs_codec.c
+    ${FS_CORE_DIR}/fs_codec_enc.c
 )
 target_include_directories(fs_core_font PUBLIC ${FS_CORE_DIR})
 target_compile_options(fs_core_font PUBLIC -Wall -Wextra)

@@ -29,8 +29,10 @@
 // on error: any fatal problem calls die(), which exits. Recoverable
 // problems in the source font are counted by warn() and listed with -v.
 //
-// Usage: sf2conv [-v] [--vel-filter=spec|fluid|off] input.sf2 output.fsf
+// Usage: sf2conv [-v] [--compress[=fast|small]] [--vel-filter=spec|fluid|off] input.sf2 output.fsf
 //   -v            list each warning about the source font
+//   --compress    store the samples losslessly compressed (fs_codec.h):
+//                 fast (default) decodes quickly, small packs tighter
 //   --vel-filter  how to treat the SF2 default "velocity to filter cutoff"
 //                 modulator (see fs_gen.c); default fluid
 //
@@ -43,6 +45,7 @@
 
 #include "fs_font.h"
 #include "fs_crc32.h"
+#include "fs_codec.h"
 
 _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "sf2conv assumes a little-endian host");
 
@@ -505,11 +508,19 @@ static uint8_t *read_file(const char *path, size_t *size) {
     return buf;
 }
 
+static int compare_u32(const void *a, const void *b) {
+    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
 // Print the command line help and exit with status 2.
 static void usage(void) {
     fprintf(stderr,
-        "usage: sf2conv [-v] [--vel-filter=spec|fluid|off] input.sf2 output.fsf\n"
+        "usage: sf2conv [-v] [--compress[=fast|small]] [--vel-filter=spec|fluid|off] input.sf2 output.fsf\n"
         "  -v            list warnings about the source font\n"
+        "  --compress    store the samples losslessly compressed:\n"
+        "                fast  bit-packed blocks, quick to decode (default)\n"
+        "                small Rice coded blocks, about 10%% smaller, slower to decode\n"
         "  --vel-filter  default 'velocity to filter cutoff' modulator:\n"
         "                fluid as FluidSynth: velocities of 64 and above lower the cutoff (default)\n"
         "                spec  as SF2 2.01: velocities below 64 lower the cutoff\n"
@@ -530,11 +541,15 @@ int main(int argc, char **argv) {
         if (default_mods[i].dst == FS_GEN_INITIAL_FILTER_FC) vel_filter = &default_mods[i];
     }
     const char *vel_filter_mode = "fluid";
+    bool compress = false;
+    FsCodecMode codec_mode = FS_CODEC_FAST;
 
     // Options
     int argi = 1;
     while (argi < argc && argv[argi][0] == '-') {
         if (strcmp(argv[argi], "-v") == 0) verbose = true;
+        else if (strcmp(argv[argi], "--compress") == 0 || strcmp(argv[argi], "--compress=fast") == 0) compress = true;
+        else if (strcmp(argv[argi], "--compress=small") == 0) { compress = true; codec_mode = FS_CODEC_SMALL; }
         else if (strncmp(argv[argi], "--vel-filter=", 13) == 0) vel_filter_mode = argv[argi] + 13;
         else usage();
         ++argi;
@@ -862,9 +877,43 @@ int main(int argc, char **argv) {
         reg->loop_end += base;
     }
 
-    // Assemble the output image: header, presets, regions, modulators, then
-    // the sample data starting on a flash sector boundary. CRCs are
-    // computed last, over the bytes as written.
+    // The sample data as plain PCM, padding frames zero
+    int16_t *pcm = xcalloc(data_frames ? data_frames : 1, sizeof(int16_t));
+    for (uint32_t i = 0; i < sample_count; ++i) {
+        if (!sample_used[i]) continue;
+        memcpy(pcm + sample_base[i], c.smpl.data + samples[i].start * 2, (samples[i].end - samples[i].start) * 2);
+    }
+
+    // Compressed: a block starts at every region start and every loop start
+    // (the positions the synth seeks to), listed in the seek table
+    FsSeekPoint *seek = NULL;
+    uint32_t seek_count = 0;
+    uint8_t *cdata = NULL;
+    size_t cdata_size = 0;
+    if (compress) {
+        uint32_t *cuts = xcalloc(2 * region_count + 1, sizeof(uint32_t));
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < region_count; ++i) {
+            const FsRegion *reg = &regions[i].region;
+            cuts[n++] = reg->start;
+            if (reg->loop_mode != FS_LOOP_NONE) cuts[n++] = reg->loop_start;
+        }
+        qsort(cuts, n, sizeof(uint32_t), compare_u32);
+        uint32_t unique = 0;
+        for (uint32_t i = 0; i < n; ++i) if (unique == 0 || cuts[unique - 1] != cuts[i]) cuts[unique++] = cuts[i];
+        uint32_t *offsets = xcalloc(unique ? unique : 1, sizeof(uint32_t));
+        cdata = fs_encode(pcm, data_frames, cuts, unique, offsets, &cdata_size, codec_mode);
+        if (!cdata) die("out of memory compressing the samples");
+        seek = xcalloc(unique ? unique : 1, sizeof(FsSeekPoint));
+        for (uint32_t i = 0; i < unique; ++i) seek[i] = (FsSeekPoint){ cuts[i], offsets[i] };
+        seek_count = unique;
+        free(cuts);
+        free(offsets);
+    }
+
+    // Assemble the output image: header, presets, regions, modulators, the
+    // seek table, then the sample data starting on a flash sector boundary.
+    // CRCs are computed last, over the bytes as written.
     FsFontHeader h;
     memset(&h, 0, sizeof(h));
     h.magic = FS_FONT_MAGIC;
@@ -876,10 +925,14 @@ int main(int argc, char **argv) {
     h.region_offset = h.preset_offset + preset_count * sizeof(FsPreset);
     h.mod_count = out_mod_count;
     h.mod_offset = h.region_offset + region_count * sizeof(FsRegion);
-    const uint32_t tables_end = h.mod_offset + out_mod_count * sizeof(FsModulator);
+    h.seek_count = seek_count;
+    h.seek_offset = h.mod_offset + out_mod_count * sizeof(FsModulator);
+    const uint32_t tables_end = h.seek_offset + seek_count * sizeof(FsSeekPoint);
     h.data_offset = (tables_end + FS_FONT_DATA_ALIGN - 1) & ~(uint32_t)(FS_FONT_DATA_ALIGN - 1);
     h.data_frames = data_frames;
-    h.total_size = h.data_offset + data_frames * 2;
+    h.data_format = compress ? FS_DATA_RICE : FS_DATA_PCM16;
+    h.data_size = compress ? (uint32_t)cdata_size : data_frames * 2;
+    h.total_size = h.data_offset + h.data_size;
     if (c.inam.data) {
         const size_t n = c.inam.size < sizeof(h.name) - 1 ? c.inam.size : sizeof(h.name) - 1;
         memcpy(h.name, c.inam.data, n);
@@ -893,20 +946,31 @@ int main(int argc, char **argv) {
         memcpy(out + h.region_offset + i * sizeof(FsRegion), &regions[i].region, sizeof(FsRegion));
     }
     if (out_mod_count) memcpy(out + h.mod_offset, out_mods, out_mod_count * sizeof(FsModulator));
-    for (uint32_t i = 0; i < sample_count; ++i) {
-        if (!sample_used[i]) continue;
-        memcpy(out + h.data_offset + sample_base[i] * 2,
-               c.smpl.data + samples[i].start * 2,
-               (samples[i].end - samples[i].start) * 2);
-    }
+    if (seek_count) memcpy(out + h.seek_offset, seek, seek_count * sizeof(FsSeekPoint));
+    memcpy(out + h.data_offset, compress ? (const void *)cdata : (const void *)pcm, h.data_size);
     h.table_crc = fs_crc32(0, out + h.header_size, h.data_offset - h.header_size);
-    h.data_crc = fs_crc32(0, out + h.data_offset, (size_t)data_frames * 2);
+    h.data_crc = fs_crc32(0, out + h.data_offset, h.data_size);
     memcpy(out, &h, sizeof(h));
 
     // Check our own output with the same reader the synth uses
     FsFont font;
     const FsFontResult res = fs_font_init(&font, out, h.total_size, true, true);
     if (res != FS_FONT_OK) die("internal error, output failed validation: %s", fs_font_result_str(res));
+    if (compress) {
+        // Decode everything back, from the start and from every seek point
+        int16_t *check = xcalloc(data_frames ? data_frames : 1, sizeof(int16_t));
+        FsDecoder d;
+        fs_decoder_seek(&d, font.cdata, font.data_size, 0);
+        fs_decoder_read(&d, check, data_frames);
+        if (memcmp(check, pcm, data_frames * sizeof(int16_t)) != 0) die("internal error, compressed samples do not decode back");
+        for (uint32_t i = 0; i < seek_count; ++i) {
+            const uint32_t n = data_frames - seek[i].frame < 256 ? data_frames - seek[i].frame : 256;
+            fs_decoder_seek(&d, font.cdata, font.data_size, seek[i].offset);
+            fs_decoder_read(&d, check, n);
+            if (memcmp(check, pcm + seek[i].frame, n * sizeof(int16_t)) != 0) die("internal error, seek point %u does not decode", i);
+        }
+        free(check);
+    }
 
     // Write the image and print a summary
     FILE *f = fopen(out_path, "wb");
@@ -921,6 +985,11 @@ int main(int argc, char **argv) {
     printf("  regions:    %u (%u bytes)\n", region_count, region_count * (unsigned)sizeof(FsRegion));
     printf("  modulators: %u (%u bytes)\n", out_mod_count, out_mod_count * (unsigned)sizeof(FsModulator));
     printf("  samples:    %u of %u used, %u frames (%.2f MB)\n", used_samples, sample_count, data_frames, data_frames * 2 / 1e6);
+    if (compress) {
+        printf("  compressed: %s, %u bytes (%.2f MB, %.1f%%), %u seek points\n",
+               codec_mode == FS_CODEC_FAST ? "fast" : "small", h.data_size, h.data_size / 1e6,
+               data_frames ? 100.0 * h.data_size / (data_frames * 2.0) : 0.0, seek_count);
+    }
     printf("  loops:      %u clamped, %u disabled\n", loops_repaired, loops_disabled);
     printf("  total:      %u bytes (%.2f MB)\n", h.total_size, h.total_size / 1e6);
     if (warning_count) printf("  warnings:   %u%s\n", warning_count, verbose ? "" : " (use -v to list)");
@@ -929,6 +998,6 @@ int main(int argc, char **argv) {
     free(instruments);
     zone_free(&inst_base);
     free(presets); free(regions); free(samples); free(sample_used); free(sample_base);
-    free(out_mods); free(out); free(file);
+    free(out_mods); free(out); free(file); free(pcm); free(cdata); free(seek);
     return 0;
 }

@@ -123,6 +123,32 @@ to GND, FMT low and XSMT high.
   which the build downloads (see `main/idf_component.yml`). Turn it off with
   "USB MIDI device" in menuconfig.
 
+### USB MIDI connector
+
+The high-speed port is the small 4-pin socket at the bottom of the
+P4-Pico, labelled V, D-, D+, G. It looks like the MX1.25 socket used for
+the speaker (1.25 mm pitch); check yours before buying plugs. The usual way
+to connect it is a short USB-A (or USB-C) lead with the far end cut off and
+soldered to a matching 4-pin plug. Standard USB cable colours:
+
+| Header pin | Signal | Usual wire colour |
+|---|---|---|
+| V | 5 V (VBUS) | red |
+| D- | data - | white |
+| D+ | data + | green |
+| G | ground | black |
+
+- High-speed USB (480 Mbit/s) is fussy about the data pair. Keep the
+  unshielded part of D+ and D- short (a few cm) and twisted together, and
+  keep the cable's shield or drain wire on G if it has one.
+- Two 5 V supplies: if the board is also powered from the Type-C, the V
+  wire joins the PC's 5 V to the board's. That is usually harmless, but it
+  can be left unconnected: the firmware does not watch VBUS
+  (`self_powered = false`). Check the Waveshare schematic for how V is
+  wired before relying on either.
+- Check with `lsusb` (expect `cafe:4f53`) and `amidi -l` (expect
+  "pico-fsynth MIDI").
+
 `host/serial_midi` (built with the host tools when the ALSA development
 files are installed, `libasound2-dev`) bridges an ALSA MIDI port to the
 serial port. Run it in its own terminal and leave it running:

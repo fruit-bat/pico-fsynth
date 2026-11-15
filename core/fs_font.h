@@ -12,16 +12,22 @@
 //
 // Produced on the host by sf2conv from a SoundFont 2 file and read in place
 // (e.g. from XIP flash) by the synth. All values are little-endian and the
-// structures use natural alignment, so the same layout is valid on x86-64
-// and Cortex-M33.
+// structures use natural alignment, so the same layout is valid on x86-64,
+// Cortex-M33 and RISC-V.
 //
 // Layout:
 //   FsFontHeader
 //   FsPreset[preset_count]     sorted by (bank, program)
 //   FsRegion[region_count]     fully resolved preset x instrument zones
 //   FsModulator[mod_count]     shared, de-duplicated modulator lists
+//   FsSeekPoint[seek_count]    compressed data only (version 2), by frame
 //   (padding to FS_FONT_DATA_ALIGN)
-//   int16_t[data_frames]       mono 16-bit sample data
+//   sample data, data_size bytes: data_frames mono 16-bit frames, either
+//   as plain int16_t (FS_DATA_PCM16) or compressed (FS_DATA_RICE, see
+//   fs_codec.h)
+//
+// Version 1 files have the shorter header (FS_FONT_HEADER_V1_SIZE, up to
+// and including name) and always plain PCM. They are still accepted.
 //
 // Generator values in FsRegion are in native SF2 units (timecents, cents,
 // centibels...) with instrument and preset contributions already summed.
@@ -34,8 +40,13 @@
 #include "fs_gen.h"
 
 #define FS_FONT_MAGIC       0x31465346u  // "FSF1"
-#define FS_FONT_VERSION     1
+#define FS_FONT_VERSION     2
+#define FS_FONT_HEADER_V1_SIZE 84        // Version 1 header (no data format fields)
 #define FS_FONT_DATA_ALIGN  4096         // Flash sector size
+
+// Sample data formats (FsFontHeader.data_format)
+#define FS_DATA_PCM16       0            // int16_t[data_frames]
+#define FS_DATA_RICE        1            // Lossless blocks, see fs_codec.h
 
 // File header, at offset 0. Offsets are bytes from the start of the blob.
 typedef struct {
@@ -54,6 +65,11 @@ typedef struct {
     uint32_t data_offset;    // Byte offset of the int16 sample data
     uint32_t data_frames;    // Number of int16 sample frames
     char name[32];           // From the SoundFont INAM chunk
+    // Version 2 only (the reader treats version 1 as PCM16 with no seek table)
+    uint32_t data_format;    // FS_DATA_*
+    uint32_t data_size;      // Bytes of sample data at data_offset
+    uint32_t seek_count;     // FsSeekPoint entries (0 for PCM16)
+    uint32_t seek_offset;    // Byte offset of the seek table
 } FsFontHeader;
 
 // One preset (a playable program): a contiguous run of regions
@@ -90,7 +106,17 @@ typedef struct {
     int16_t gen[FS_GEN_COUNT];  // Generator values, indexed by FsGen
 } FsRegion;
 
-_Static_assert(sizeof(FsFontHeader) == 84, "FsFontHeader layout");
+// Compressed data: where decoding can start. Every region start, and the
+// loop start of every looping region, begins a compressed block; this
+// table maps those frame positions to the block's byte offset in the
+// sample data. Sorted by frame, no duplicates.
+typedef struct {
+    uint32_t frame;
+    uint32_t offset;
+} FsSeekPoint;
+
+_Static_assert(sizeof(FsFontHeader) == 100, "FsFontHeader layout");
+_Static_assert(offsetof(FsFontHeader, data_format) == FS_FONT_HEADER_V1_SIZE, "FsFontHeader v1 prefix");
 _Static_assert(sizeof(FsPreset) == 32, "FsPreset layout");
 _Static_assert(sizeof(FsRegion) == 156, "FsRegion layout");
 _Static_assert(sizeof(FsModulator) == 12, "FsModulator layout");
@@ -103,7 +129,12 @@ typedef struct {
     const FsPreset *presets;
     const FsRegion *regions;
     const FsModulator *mods;
-    const int16_t *data;
+    const int16_t *data;        // FS_DATA_PCM16: the samples
+    const uint8_t *cdata;       // FS_DATA_RICE: the compressed samples
+    uint32_t data_format;       // FS_DATA_*, FS_DATA_PCM16 for version 1 files
+    uint32_t data_size;         // Bytes of sample data
+    const FsSeekPoint *seek;    // FS_DATA_RICE: seek table
+    uint32_t seek_count;
 } FsFont;
 
 // Result of fs_font_init. fs_font_result_str gives a readable message.
@@ -138,6 +169,11 @@ const char *fs_font_result_str(FsFontResult result);
 // Find a preset by bank and program, NULL if not present. Binary search
 // (the preset table is sorted), so it is cheap enough for program changes.
 const FsPreset *fs_font_find_preset(const FsFont *font, uint16_t bank, uint16_t program);
+
+// Compressed fonts: the byte offset of the block starting at frame, from
+// the seek table (binary search). Returns false if no block starts there;
+// fs_font_init checks that every region start and loop start has one.
+bool fs_font_seek(const FsFont *font, uint32_t frame, uint32_t *offset);
 
 // Region i (0 .. region_count-1) of a preset.
 static inline const FsRegion *fs_font_preset_region(const FsFont *font, const FsPreset *preset, uint32_t i) {

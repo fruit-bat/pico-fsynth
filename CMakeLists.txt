@@ -83,6 +83,7 @@ add_executable(pico_fsynth
     ${FS_CORE_DIR}/fs_gen.c
     ${FS_CORE_DIR}/fs_crc32.c
     ${FS_CORE_DIR}/fs_font.c
+    ${FS_CORE_DIR}/fs_codec.c
     ${FS_CORE_DIR}/fs_math.c
     ${FS_CORE_DIR}/fs_stream.c
     ${FS_CORE_DIR}/fs_voice.c
@@ -155,6 +156,7 @@ if(NOT FS_FP_CONTRACT)
 endif()
 set_source_files_properties(
     ${FS_CORE_DIR}/fs_voice.c ${FS_CORE_DIR}/fs_effects.c ${FS_CORE_DIR}/fs_synth.c ${FS_CORE_DIR}/fs_stream.c
+    ${FS_CORE_DIR}/fs_codec.c
     ${FS_FW_DIR}/bench.c
     PROPERTIES COMPILE_OPTIONS "${FS_CORE_OPTIONS}"
 )

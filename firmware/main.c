@@ -155,6 +155,8 @@ static void __not_in_flash_func(apply_midi)(void) {
             fs_synth_set_master_volume(&synth, (uint16_t)(m.data[1] | (m.data[2] << 7)));
         } else if (m.len == 3 && m.data[0] == MIDI_MSG_EQ) {
             fs_synth_set_eq_gs(&synth, m.data[1], m.data[2]);
+        } else if (m.len == 2 && m.data[0] == MIDI_MSG_WIDTH) {
+            fs_synth_set_width(&synth, m.data[1]);
         } else fs_synth_midi(&synth, m.data, m.len);
     }
 }
@@ -377,6 +379,7 @@ int main(void) {
                     settings_erase();
                     fs_synth_set_master_volume(&synth, 16383);
                     for (uint8_t p = 0; p < 4; ++p) fs_synth_set_eq_gs(&synth, p, (p & 1) ? 0x40 : 0);
+                    fs_synth_set_width(&synth, 100);
                 }
                 park_request = false;
                 printf("settings: %s\n", cmd == MIDI_SETTINGS_SAVE ? "saved to flash" : "erased, defaults restored");
@@ -433,11 +436,11 @@ int main(void) {
             static uint32_t clipped_last;
             const uint32_t clipped = synth.stats.clipped;
             const float peak_db = peak > 1e-6f ? 20.0f * log10f(peak) : -120.0f;
-            printf("cpu core1 %5.1f%% (max %5.1f%%) core0 %5.1f%%  voices max %2lu  underruns %lu  midi %lu (dropped %lu)  peak %4.0f dB  clipped %lu  volume %3.0f%%  eq %+.0f/%+.0f dB%s\n",
+            printf("cpu core1 %5.1f%% (max %5.1f%%) core0 %5.1f%%  voices max %2lu  underruns %lu  midi %lu (dropped %lu)  peak %4.0f dB  clipped %lu  volume %3.0f%%  eq %+.0f/%+.0f dB  width %u%%%s\n",
                    (double)load, (double)load_max, (double)load0, (unsigned long)vmax,
                    (unsigned long)audio_out_underruns(), (unsigned long)midi_in_count(),
                    (unsigned long)midi_in_dropped(), (double)peak_db, (unsigned long)(clipped - clipped_last),
-                   (double)(100.0f * synth.master_volume), (double)synth.eq.low_db, (double)synth.eq.high_db,
+                   (double)(100.0f * synth.master_volume), (double)synth.eq.low_db, (double)synth.eq.high_db, (unsigned)synth.width_pct,
                    demo_playing ? "  [demo]" : "");
             clipped_last = clipped;
             // Where the time goes. Per voice-sample cycles from the parts on

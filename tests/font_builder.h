@@ -59,6 +59,8 @@ static inline void tb_build(TbFont *f, const TbRegion *in, uint32_t n) {
     h.data_offset = (tables_end + FS_FONT_DATA_ALIGN - 1) & ~(uint32_t)(FS_FONT_DATA_ALIGN - 1);
     h.data_frames = TB_SAMPLE_FRAMES;
     h.total_size = h.data_offset + TB_SAMPLE_FRAMES * 2;
+    h.data_format = FS_DATA_PCM16;
+    h.data_size = TB_SAMPLE_FRAMES * 2;
     strcpy(h.name, "test font");
 
     uint8_t *b = calloc(1, h.total_size);

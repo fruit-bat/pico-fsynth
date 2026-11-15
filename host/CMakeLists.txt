@@ -6,6 +6,7 @@
 #   sf2conv   .sf2 -> .fsf font compiler (font reader only)
 #   fsfinfo   lists the contents of a .fsf (font reader only)
 #   fsrender  renders a MIDI file to WAV with the full synth core
+#   serial_midi  ALSA MIDI port -> ESP32-P4 serial console (if ALSA is found)
 # The core is split into two libraries so the font tools do not pull in
 # the synth. fs_config.h defaults apply; override with -D options as on
 # the device.
@@ -33,11 +34,14 @@ endif()
 
 set(FS_CORE_DIR ${CMAKE_CURRENT_LIST_DIR}/../core)
 
-# Compiled font format: generator tables, CRC and the .fsf reader
+# Compiled font format: generator tables, CRC, the .fsf reader and the
+# sample codec (decoder and, host only, encoder)
 add_library(fs_core_font STATIC
     ${FS_CORE_DIR}/fs_gen.c
     ${FS_CORE_DIR}/fs_crc32.c
     ${FS_CORE_DIR}/fs_font.c
+    ${FS_CORE_DIR}/fs_codec.c
+    ${FS_CORE_DIR}/fs_codec_enc.c
 )
 target_include_directories(fs_core_font PUBLIC ${FS_CORE_DIR})
 target_compile_options(fs_core_font PUBLIC -Wall -Wextra)
@@ -63,6 +67,15 @@ target_link_libraries(sf2conv fs_core_font)
 
 add_executable(fsfinfo fsfinfo.c)
 target_link_libraries(fsfinfo fs_core_font)
+
+# ALSA sequencer to serial bridge for the ESP32-P4 (Linux, needs libasound2-dev)
+find_package(ALSA)
+if(ALSA_FOUND)
+    add_executable(serial_midi serial_midi.c)
+    target_link_libraries(serial_midi ALSA::ALSA)
+else()
+    message(STATUS "ALSA not found: serial_midi not built")
+endif()
 
 enable_testing()
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../tests tests)

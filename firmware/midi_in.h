@@ -21,10 +21,11 @@
 
 // A queued message: up to 3 bytes, status byte first. SysEx messages the
 // synth understands are passed on as codes that never appear in the queue
-// otherwise (0xfd..0xff are real-time status bytes, which the parsers drop):
+// otherwise (0xfb..0xff are real-time status bytes, which the parsers drop):
 //   GM/GS reset:   the single byte MIDI_MSG_RESET
 //   Master volume: MIDI_MSG_MASTER_VOLUME, lsb, msb
 //   GS master EQ:  MIDI_MSG_EQ, parameter (0..3), value
+//   Stereo width:  MIDI_MSG_WIDTH, percent
 typedef struct {
     uint8_t len;            // 1..3
     uint8_t data[3];

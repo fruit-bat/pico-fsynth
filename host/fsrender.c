@@ -27,6 +27,7 @@
 //   -C rate_hz,depth_ms,level       chorus settings
 //   -E bass_db,treble_db[,bass_hz,treble_hz]
 //                                   master EQ (default flat, 200 / 3000 Hz)
+//   -W percent                      stereo width, 0 (mono) .. 100 (default)
 //
 // Prints the audio length, CPU time and voice statistics (notes, peak
 // voices, steals, clipping) when done.
@@ -110,6 +111,7 @@ int main(int argc, char **argv) {
     float rv[4] = { FS_REVERB_DEFAULT_ROOM, FS_REVERB_DEFAULT_DAMP, FS_REVERB_DEFAULT_WIDTH, FS_REVERB_DEFAULT_LEVEL };
     float ch[3] = { FS_CHORUS_DEFAULT_RATE, FS_CHORUS_DEFAULT_DEPTH, FS_CHORUS_DEFAULT_LEVEL };
     float eq[4] = { 200, 0, 3000, 0 };  // Master EQ low Hz, low dB, high Hz, high dB
+    int width = 100;
     int argi = 1;
     while (argi < argc && argv[argi][0] == '-') {
         if (!strcmp(argv[argi], "-r") && argi + 1 < argc) rate = (uint32_t)atoi(argv[++argi]);
@@ -119,13 +121,15 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[argi], "-R") && argi + 1 < argc) sscanf(argv[++argi], "%f,%f,%f,%f", &rv[0], &rv[1], &rv[2], &rv[3]);
         else if (!strcmp(argv[argi], "-C") && argi + 1 < argc) sscanf(argv[++argi], "%f,%f,%f", &ch[0], &ch[1], &ch[2]);
         else if (!strcmp(argv[argi], "-E") && argi + 1 < argc) sscanf(argv[++argi], "%f,%f,%f,%f", &eq[1], &eq[3], &eq[0], &eq[2]);
+        else if (!strcmp(argv[argi], "-W") && argi + 1 < argc) width = atoi(argv[++argi]);
         else break;
         ++argi;
     }
-    if (argc - argi != 3 || rate < 8000 || rate > FS_MAX_SAMPLE_RATE) {
+    if (argc - argi != 3 || width < 0 || width > 100 || rate < 8000 || rate > FS_MAX_SAMPLE_RATE) {
         fprintf(stderr, "usage: fsrender [-r rate (8000..%d)] [-g gain] [-d (dry, no effects)] [-t (render on two threads)]\n"
                 "                [-R room,damp,width,level] [-C rate_hz,depth_ms,level]\n"
-                "                [-E bass_db,treble_db[,bass_hz,treble_hz]] font.fsf song.mid out.wav\n", FS_MAX_SAMPLE_RATE);
+                "                [-E bass_db,treble_db[,bass_hz,treble_hz]] [-W width_percent]\n"
+                "                font.fsf song.mid out.wav\n", FS_MAX_SAMPLE_RATE);
         return 2;
     }
 
@@ -147,6 +151,7 @@ int main(int argc, char **argv) {
     fs_synth_set_reverb(&synth, rv[0], rv[1], rv[2], rv[3]);
     fs_synth_set_chorus(&synth, ch[0], ch[1], ch[2]);
     fs_synth_set_eq(&synth, eq[0], eq[1], eq[2], eq[3]);
+    fs_synth_set_width(&synth, (uint8_t)width);
 
     FILE *out = fopen(argv[argi + 2], "wb");
     if (!out) { fprintf(stderr, "cannot create %s\n", argv[argi + 2]); return 1; }

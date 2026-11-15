@@ -43,9 +43,27 @@
 #define FS_REGION_INDEX_SIZE 4096
 #endif
 
+// Voice sample loop: 0 = one pass per frame (interpolate, filter, mix);
+// 1 = interpolate the whole block first, then filter and mix (see
+// render_samples in fs_voice.c). Which is faster depends on the CPU.
+#ifndef FS_RENDER_TWO_PASS
+#define FS_RENDER_TWO_PASS 0
+#endif
+
 // Interpolation: 1 = 4-point cubic (Catmull-Rom), 0 = linear
 #ifndef FS_INTERP_CUBIC
 #define FS_INTERP_CUBIC 1
+#endif
+
+// Cubic interpolation weights from a table instead of evaluating the
+// polynomial per frame: 0 = off, else the table has 2^bits + 1 entries
+// (16 bytes each) and the fractional position is rounded to 1 / 2^bits of
+// a frame. Four independent multiplies replace a chain of dependent ones,
+// which suits CPUs with long floating point latency (the ESP32-P4: about
+// 15% faster). The output differs very slightly from the polynomial
+// (about -80 dB at 1 kHz with 10 bits, -60 dB near Nyquist).
+#ifndef FS_INTERP_TABLE_BITS
+#define FS_INTERP_TABLE_BITS 0
 #endif
 
 // Highest sample rate the effects buffers are sized for
@@ -83,6 +101,21 @@
 
 #define FS_TOTAL_VOICES (FS_MAX_VOICES + FS_STEAL_RESERVE)
 
+// Large buffers that are not touched per sample can live outside FsSynth,
+// allocated once by fs_synth_init with FS_EXTERNAL_ALLOC(bytes), e.g. in
+// slower external RAM, to leave internal RAM for voices. 0: inside FsSynth.
+//   FS_EFFECTS_EXTERNAL       reverb and chorus state (about 70 KB at
+//                             48 kHz); skipped if the allocation fails
+//   FS_REGION_INDEX_EXTERNAL  the region index (5 bytes per region, read at
+//                             note-on); note-ons read the font's region
+//                             records instead if the allocation fails
+#ifndef FS_EFFECTS_EXTERNAL
+#define FS_EFFECTS_EXTERNAL 0
+#endif
+#ifndef FS_REGION_INDEX_EXTERNAL
+#define FS_REGION_INDEX_EXTERNAL 0
+#endif
+
 // Voice rendering can be split into this many parts, one per core
 #ifndef FS_RENDER_PARTS
 #define FS_RENDER_PARTS 2
@@ -95,27 +128,44 @@
 #define FS_RENDER_EFFECTS_VOICES 4
 #endif
 
-// Place time critical functions in RAM on the Pico. Wrap the function name
-// in a definition: void FS_RAM_FUNC(name)(args) { ... }. Code in RAM does
-// not stall on flash cache misses, and keeps running while flash is being
-// written. A no-op on the host.
+// Place time critical functions in RAM on the Pico (and in internal RAM,
+// IRAM, on the ESP32). Wrap the function name in a definition:
+// void FS_RAM_FUNC(name)(args) { ... }. Code in RAM does not stall on flash
+// cache misses, and keeps running while flash is being written. A no-op on
+// the host.
 #ifdef PICO_ON_DEVICE
 #include "pico.h"
 #define FS_RAM_FUNC(f) __not_in_flash_func(f)
+#elif defined(ESP_PLATFORM)
+#include "esp_attr.h"
+#define FS_RAM_FUNC(f) IRAM_ATTR f
+#if (FS_EFFECTS_EXTERNAL || FS_REGION_INDEX_EXTERNAL) && !defined(FS_EXTERNAL_ALLOC)
+#include "esp_heap_caps.h"
+#define FS_EXTERNAL_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#endif
 #else
 #define FS_RAM_FUNC(f) f
 #endif
 
 // CPU cycle counter for profiling (the DWT counter on the M33, which the
-// firmware enables on each core). Always 0 on the host, so the profiling
-// counters in FsSynthStats stay at 0 there.
+// firmware enables on each core; the per-core cycle CSR on the ESP32).
+// Always 0 on the host, so the profiling counters in FsSynthStats stay at 0
+// there.
 #ifndef FS_CYCLE_COUNT
 #if defined(PICO_ON_DEVICE) && PICO_RP2350
 #include "hardware/structs/m33.h"
 #define FS_CYCLE_COUNT() (m33_hw->dwt_cyccnt)
+#elif defined(ESP_PLATFORM)
+#include "esp_cpu.h"
+#define FS_CYCLE_COUNT() ((uint32_t)esp_cpu_get_cycle_count())
 #else
 #define FS_CYCLE_COUNT() 0u
 #endif
+#endif
+
+#if (FS_EFFECTS_EXTERNAL || FS_REGION_INDEX_EXTERNAL) && !defined(FS_EXTERNAL_ALLOC)
+#include <stdlib.h>
+#define FS_EXTERNAL_ALLOC(n) malloc(n)
 #endif
 
 #define FS_MIDI_CHANNELS 16

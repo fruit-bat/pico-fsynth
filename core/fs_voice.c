@@ -125,9 +125,12 @@ static void FS_RAM_FUNC(update_dynamic)(FsVoice *v, const float sum[FS_GEN_COUNT
     v->pan = fs_clampf(gen(v, sum, FS_GEN_PAN), -500.0f, 500.0f);
     v->reverb_send = fs_clampf(gen(v, sum, FS_GEN_REVERB_EFFECTS_SEND), 0.0f, 1000.0f) * 0.001f;
     v->chorus_send = fs_clampf(gen(v, sum, FS_GEN_CHORUS_EFFECTS_SEND), 0.0f, 1000.0f) * 0.001f;
-    // Constant power pan
-    v->pan_l = sqrtf(0.5f - v->pan * 0.001f);
-    v->pan_r = sqrtf(0.5f + v->pan * 0.001f);
+    // Constant power pan. Clamped at 0: at +-500 the argument should be 0,
+    // but with fused multiply-add (FS_FP_CONTRACT, the ESP32-P4 default)
+    // 0.5 - 500 * 0.001f comes out as -2.4e-8, and its sqrtf is NaN, which
+    // silenced the other side for every hard panned voice.
+    v->pan_l = sqrtf(fmaxf(0.0f, 0.5f - v->pan * 0.001f));
+    v->pan_r = sqrtf(fmaxf(0.0f, 0.5f + v->pan * 0.001f));
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +353,7 @@ void FS_RAM_FUNC(fs_voice_start)(FsVoice *v, const FsFont *font, const FsRegion 
     v->region = region;
     v->mods = fs_font_region_mods(font, region);
 
-    fs_stream_start(&v->stream, font->data, region->start, region->end,
+    fs_stream_start(&v->stream, font, region->start, region->end,
                     region->loop_start, region->loop_end, region->loop_mode != FS_LOOP_NONE);
     v->pos = 1;
     v->frac = 0;
@@ -429,6 +432,36 @@ void FS_RAM_FUNC(fs_voice_kill)(FsVoice *v, float sample_rate) {
 // Rendering
 // ---------------------------------------------------------------------------
 
+// One output frame interpolated from the stream ring at pos + frac / 2^32.
+static inline __attribute__((always_inline)) float interpolate(const int16_t *ring, uint32_t pos, uint32_t frac) {
+#if FS_INTERP_CUBIC && FS_INTERP_TABLE_BITS
+    // Weights for frac rounded to the nearest table entry (no overflow:
+    // the index is at most 2^bits, the table's last entry)
+    const float *w = fs_interp_weights[((frac >> (31 - FS_INTERP_TABLE_BITS)) + 1) >> 1];
+    const int16_t *p = ring + ((pos - 1) & FS_STREAM_MASK);
+    return (w[0] * (float)p[0] + w[1] * (float)p[1]) + (w[2] * (float)p[2] + w[3] * (float)p[3]);
+#else
+    const float f = fs_frac32_to_float(frac);
+#if FS_INTERP_CUBIC
+    // Guard frames after the ring end make the 4 frames contiguous
+    const int16_t *p = ring + ((pos - 1) & FS_STREAM_MASK);
+    const float s0 = (float)p[0];
+    const float s1 = (float)p[1];
+    const float s2 = (float)p[2];
+    const float s3 = (float)p[3];
+    const float c1 = 0.5f * (s2 - s0);
+    const float c2 = s0 - 2.5f * s1 + 2.0f * s2 - 0.5f * s3;
+    const float c3 = 0.5f * (s3 - s0) + 1.5f * (s1 - s2);
+    return ((c3 * f + c2) * f + c1) * f + s1;
+#else
+    const int16_t *p = ring + (pos & FS_STREAM_MASK);
+    const float s1 = (float)p[0];
+    const float s2 = (float)p[1];
+    return s1 + f * (s2 - s1);
+#endif
+#endif
+}
+
 // Inner loop: interpolate from the stream ring, optionally filter, apply the
 // amplitude ramp and mix into the left and right buses and, with `rev` /
 // `cho`, the effect send buses. Inlined for each combination so the tests
@@ -437,6 +470,9 @@ void FS_RAM_FUNC(fs_voice_kill)(FsVoice *v, float sample_rate) {
 // Measured on the RP2350 (firmware/bench.c): mixing the sends here instead
 // of in separate passes over a buffer saves about 20 cycles per sample, and
 // plain multiply + add is faster than fused multiply-add (VFMA).
+// FS_RENDER_TWO_PASS instead interpolates the whole block first, for
+// in-order cores whose floating point latency a single pass cannot hide
+// (the ESP32-P4).
 static inline __attribute__((always_inline)) float render_samples(
     FsVoice *v, float *restrict out_l, float *restrict out_r, float *restrict out_rv, float *restrict out_ch,
     float gl, float gr, float grv, float gch,
@@ -449,25 +485,36 @@ static inline __attribute__((always_inline)) float render_samples(
     float z1 = v->z1, z2 = v->z2;
     float x = 0.0f;
 
+#if FS_RENDER_TWO_PASS
+    // Pass 1: interpolate the block. Frames are independent of each other,
+    // so unrolling lets an in-order core overlap their arithmetic.
+    float buf[B];
+#pragma GCC unroll 4
     for (int i = 0; i < B; ++i) {
-        const float f = fs_frac32_to_float(frac);
-#if FS_INTERP_CUBIC
-        // Guard frames after the ring end make the 4 frames contiguous
-        const int16_t *p = ring + ((pos - 1) & FS_STREAM_MASK);
-        const float s0 = (float)p[0];
-        const float s1 = (float)p[1];
-        const float s2 = (float)p[2];
-        const float s3 = (float)p[3];
-        const float c1 = 0.5f * (s2 - s0);
-        const float c2 = s0 - 2.5f * s1 + 2.0f * s2 - 0.5f * s3;
-        const float c3 = 0.5f * (s3 - s0) + 1.5f * (s1 - s2);
-        float s = ((c3 * f + c2) * f + c1) * f + s1;
+        buf[i] = interpolate(ring, pos, frac);
+        const uint32_t nf = frac + inc_frac;
+        pos += inc_int + (nf < frac);
+        frac = nf;
+    }
+    // Pass 2: filter, amplitude ramp and mix
+    for (int i = 0; i < B; ++i) {
+        float s = buf[i];
+        if (filter) {
+            const float y = b0 * s + z1;
+            z1 = b1 * s - a1 * y + z2;
+            z2 = b2 * s - a2 * y;
+            s = y;
+        }
+        amp += damp;
+        x = s * amp;
+        out_l[i] += x * gl;
+        out_r[i] += x * gr;
+        if (rev) out_rv[i] += x * grv;
+        if (cho) out_ch[i] += x * gch;
+    }
 #else
-        const int16_t *p = ring + (pos & FS_STREAM_MASK);
-        const float s1 = (float)p[0];
-        const float s2 = (float)p[1];
-        float s = s1 + f * (s2 - s1);
-#endif
+    for (int i = 0; i < B; ++i) {
+        float s = interpolate(ring, pos, frac);
         if (filter) {
             const float y = b0 * s + z1;
             z1 = b1 * s - a1 * y + z2;
@@ -485,6 +532,7 @@ static inline __attribute__((always_inline)) float render_samples(
         pos += inc_int + (nf < frac);
         frac = nf;
     }
+#endif
 
     v->pos = pos;
     v->frac = frac;

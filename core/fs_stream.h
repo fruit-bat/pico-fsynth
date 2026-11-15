@@ -11,9 +11,11 @@
 // Virtual frame 0 is a zero frame (so cubic interpolation has a frame
 // before the start); the sample starts at virtual frame 1.
 //
-// On the host, and as a first step on the Pico, refills are a memcpy from
-// the font. The copy is isolated in fs_stream_fill so it can later become
-// an asynchronous DMA transfer from flash.
+// Refills are a memcpy from the font for plain PCM fonts, or decode the
+// compressed data (fs_codec.h) for compressed ones; both happen in
+// fs_stream_fill. The decoder runs sequentially, and seeks only to block
+// starts listed in the font's seek table: the note's start and its loop
+// start.
 //
 // Positions: a "virtual" position counts frames of that unrolled stream
 // from the start of the note, and maps to ring slot (vpos & FS_STREAM_MASK).
@@ -27,6 +29,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "fs_config.h"
+#include "fs_font.h"
+#include "fs_codec.h"
 
 #define FS_STREAM_MASK (FS_STREAM_FRAMES - 1)
 // The first frames of the ring are repeated after its end so the 4 frames
@@ -39,7 +43,7 @@
 // virtual positions.
 typedef struct {
     int16_t *ring;          // FS_STREAM_FRAMES + FS_STREAM_GUARD frames, owned by FsSynth
-    const int16_t *data;    // Font sample data
+    const FsFont *font;     // Sample data source
     uint32_t filled;        // Virtual frames written so far
     uint32_t src;           // Next font frame to copy
     uint32_t end;           // One past the last font frame
@@ -48,16 +52,21 @@ typedef struct {
     uint32_t end_vpos;      // Virtual position of the sample end (when src_done)
     bool looping;           // Jump back to loop_start on reaching loop_end
     bool src_done;          // The whole sample has been copied; only silence follows
+    // Compressed fonts only: the decoder sits at frame src
+    uint32_t loop_offset;   // Byte offset of the block at loop_start
+    FsDecoder dec;
 } FsStream;
 
 // Start streaming a sample from font frame start. The ring is not filled
 // yet; call fs_stream_fill before reading.
 //
-// data        the font's sample data (FsFont.data)
+// font        the font holding the sample (plain or compressed). For a
+//             compressed font, start (and loop_start when looping) must be
+//             in its seek table, which fs_font_init checks for every region.
 // start, end  frames to play, end exclusive
 // loop_start, loop_end  loop, end exclusive; ignored unless looping
 // looping     whether to loop; also forced off if the loop is empty
-void fs_stream_start(FsStream *s, const int16_t *data, uint32_t start, uint32_t end,
+void fs_stream_start(FsStream *s, const FsFont *font, uint32_t start, uint32_t end,
                      uint32_t loop_start, uint32_t loop_end, bool looping);
 
 // Stop looping (SF2 loop mode 3 on note release). Already buffered frames

@@ -1,6 +1,8 @@
 //
 // fs_font.c - attach to and validate a compiled .fsf font.
 //
+// Reads version 1 (PCM only) and version 2 (PCM or compressed) files.
+//
 // The font is used in place (on the Pico, straight from XIP flash), so
 // fs_font_init does all the validation up front. After it succeeds every
 // offset, count and index in the font is known to be in range, and the
@@ -25,26 +27,37 @@ FsFontResult fs_font_init(FsFont *font, const void *blob, size_t size,
     const uint8_t *base = (const uint8_t *)blob;
     const FsFontHeader *h = (const FsFontHeader *)base;
 
-    if (size && size < sizeof(FsFontHeader)) return FS_FONT_ERR_SIZE;
+    if (size && size < FS_FONT_HEADER_V1_SIZE) return FS_FONT_ERR_SIZE;
     if (h->magic != FS_FONT_MAGIC) return FS_FONT_ERR_MAGIC;
-    if (h->version != FS_FONT_VERSION || h->header_size != sizeof(FsFontHeader)) return FS_FONT_ERR_VERSION;
+    // Version 1: the short header, plain PCM. Version 2: the full header.
+    const bool v1 = h->version == 1 && h->header_size == FS_FONT_HEADER_V1_SIZE;
+    if (!v1 && !(h->version == FS_FONT_VERSION && h->header_size == sizeof(FsFontHeader))) return FS_FONT_ERR_VERSION;
+    if (size && size < h->header_size) return FS_FONT_ERR_SIZE;
     if (size && h->total_size > size) return FS_FONT_ERR_SIZE;
+
+    const uint32_t format = v1 ? FS_DATA_PCM16 : h->data_format;
+    const uint32_t data_size = v1 ? h->data_frames * 2u : h->data_size;
+    const uint32_t seek_count = v1 ? 0 : h->seek_count;
+    const uint32_t seek_offset = v1 ? 0 : h->seek_offset;
+    if (format != FS_DATA_PCM16 && format != FS_DATA_RICE) return FS_FONT_ERR_VERSION;
 
     const uint32_t total = h->total_size;
     if (!fs_range_ok(h->preset_offset, h->preset_count, sizeof(FsPreset), total) ||
         !fs_range_ok(h->region_offset, h->region_count, sizeof(FsRegion), total) ||
         !fs_range_ok(h->mod_offset, h->mod_count, sizeof(FsModulator), total) ||
-        !fs_range_ok(h->data_offset, h->data_frames, sizeof(int16_t), total) ||
+        !fs_range_ok(h->data_offset, data_size, 1, total) ||
+        !fs_range_ok(seek_offset, seek_count, sizeof(FsSeekPoint), h->data_offset) ||
         h->data_offset < h->header_size) {
         return FS_FONT_ERR_LAYOUT;
     }
+    if (format == FS_DATA_PCM16 && (uint64_t)h->data_frames * 2 != data_size) return FS_FONT_ERR_LAYOUT;
+    if (format == FS_DATA_RICE && seek_count == 0 && h->region_count) return FS_FONT_ERR_LAYOUT;
 
     if (check_table_crc &&
         fs_crc32(0, base + h->header_size, h->data_offset - h->header_size) != h->table_crc) {
         return FS_FONT_ERR_TABLE_CRC;
     }
-    if (check_data_crc &&
-        fs_crc32(0, base + h->data_offset, (size_t)h->data_frames * sizeof(int16_t)) != h->data_crc) {
+    if (check_data_crc && fs_crc32(0, base + h->data_offset, data_size) != h->data_crc) {
         return FS_FONT_ERR_DATA_CRC;
     }
 
@@ -53,7 +66,19 @@ FsFontResult fs_font_init(FsFont *font, const void *blob, size_t size,
     font->presets = (const FsPreset *)(base + h->preset_offset);
     font->regions = (const FsRegion *)(base + h->region_offset);
     font->mods = (const FsModulator *)(base + h->mod_offset);
-    font->data = (const int16_t *)(base + h->data_offset);
+    font->data = format == FS_DATA_PCM16 ? (const int16_t *)(base + h->data_offset) : NULL;
+    font->cdata = base + h->data_offset;
+    font->data_format = format;
+    font->data_size = data_size;
+    font->seek = seek_count ? (const FsSeekPoint *)(base + seek_offset) : NULL;
+    font->seek_count = seek_count;
+
+    // Seek table: strictly increasing frames, offsets inside the data
+    for (uint32_t i = 0; i < seek_count; ++i) {
+        const FsSeekPoint *sp = &font->seek[i];
+        if (sp->frame >= h->data_frames || sp->offset >= data_size) return FS_FONT_ERR_LAYOUT;
+        if (i > 0 && sp->frame <= font->seek[i - 1].frame) return FS_FONT_ERR_LAYOUT;
+    }
 
     // Validate references so the synth never has to bounds check at runtime
     for (uint32_t i = 0; i < h->preset_count; ++i) {
@@ -75,9 +100,29 @@ FsFontResult fs_font_init(FsFont *font, const void *blob, size_t size,
             return FS_FONT_ERR_REGION;
         }
         if (r->sample_rate == 0 || r->root_key > 127) return FS_FONT_ERR_REGION;
+        // Compressed: decoding must be able to start where the voice starts
+        // and where it loops back to
+        uint32_t off;
+        if (format == FS_DATA_RICE &&
+            (!fs_font_seek(font, r->start, &off) ||
+             (r->loop_mode != FS_LOOP_NONE && !fs_font_seek(font, r->loop_start, &off)))) {
+            return FS_FONT_ERR_REGION;
+        }
     }
 
     return FS_FONT_OK;
+}
+
+// See fs_font.h. In RAM: called at every note-on of a compressed font.
+bool FS_RAM_FUNC(fs_font_seek)(const FsFont *font, uint32_t frame, uint32_t *offset) {
+    uint32_t lo = 0, hi = font->seek_count;
+    while (lo < hi) {
+        const uint32_t mid = (lo + hi) >> 1;
+        const uint32_t f = font->seek[mid].frame;
+        if (f == frame) { *offset = font->seek[mid].offset; return true; }
+        if (f < frame) lo = mid + 1; else hi = mid;
+    }
+    return false;
 }
 
 // See fs_font.h.

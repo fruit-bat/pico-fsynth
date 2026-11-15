@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Set the synth's master EQ (Roland GS master EQ SysEx) over USB MIDI.
+# Set the synth's master EQ (Roland GS master EQ SysEx).
 #
-# Usage: host/master_eq.sh BASS_DB TREBLE_DB [BASS_HZ TREBLE_HZ] [amidi-port]
+# Usage: host/master_eq.sh BASS_DB TREBLE_DB [BASS_HZ TREBLE_HZ] [port]
 #   BASS_DB, TREBLE_DB  -12..12 (whole dB), 0 0 = flat
 #   BASS_HZ             200 or 400 (default 200), shelf corner
 #   TREBLE_HZ           3000 or 6000 (default 3000), shelf corner
-#   port                e.g. hw:2,0,0 (default: the first port named pico-fsynth)
+#   port                hw:2,0,0, fsynth-serial... (default: found by host/midi_port.sh)
 #
 # Example: host/master_eq.sh 0 -4      (4 dB less treble above 3 kHz)
 #
@@ -19,14 +19,14 @@
 # The synth applies the change at once; it is lost at power off unless
 # saved with host/settings.sh save.
 #
-# Requires amidi (alsa-utils) and the synth connected over USB.
+# Works over USB MIDI or the host/serial_midi bridge (see host/midi_port.sh).
 set -e
 bass=${1:?usage: $0 BASS_DB TREBLE_DB [BASS_HZ TREBLE_HZ] [port]}
 treble=${2:?usage: $0 BASS_DB TREBLE_DB [BASS_HZ TREBLE_HZ] [port]}
 bass_hz=${3:-200}
 treble_hz=${4:-3000}
-port=${5:-$(amidi -l | awk '/pico-fsynth/ { print $2; exit }')}
-[ -n "$port" ] || { echo "pico-fsynth MIDI port not found (amidi -l)" >&2; exit 1; }
+. "$(dirname "$0")/midi_port.sh"
+midi_find_port "$5"
 
 # Print a whole number of dB limited to the GS range -12..12
 clamp() { local v=$1; [ $v -lt -12 ] && v=-12; [ $v -gt 12 ] && v=12; echo $v; }
@@ -38,5 +38,5 @@ msg="$(gs 0 $([ "$bass_hz" -ge 400 ] && echo 1 || echo 0))"
 msg+="$(gs 1 $(( 0x40 + $(clamp $bass) )))"
 msg+="$(gs 2 $([ "$treble_hz" -ge 6000 ] && echo 1 || echo 0))"
 msg+="$(gs 3 $(( 0x40 + $(clamp $treble) )))"
-amidi -p "$port" -S "$msg"
+midi_send "$msg"
 echo "$port: bass $bass dB at $bass_hz Hz, treble $treble dB at $treble_hz Hz"

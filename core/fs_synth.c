@@ -221,7 +221,14 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
         s->voices[i].stream.ring = s->rings[i];
     }
     for (uint8_t c = 0; c < FS_MIDI_CHANNELS; ++c) channel_init(s, c);
-    const uint32_t indexed = font->header->region_count < FS_REGION_INDEX_SIZE ? font->header->region_count : FS_REGION_INDEX_SIZE;
+#if FS_REGION_INDEX_EXTERNAL
+    if (!s->region_index) s->region_index = FS_EXTERNAL_ALLOC(FS_REGION_INDEX_SIZE * sizeof(FsRegionIndexEntry));  // Once
+#else
+    s->region_index = s->region_index_mem;
+#endif
+    uint32_t indexed = font->header->region_count < FS_REGION_INDEX_SIZE ? font->header->region_count : FS_REGION_INDEX_SIZE;
+    if (!s->region_index) indexed = 0;
+    s->region_indexed = indexed;
     for (uint32_t i = 0; i < indexed; ++i) {
         const FsRegion *r = &font->regions[i];
         s->region_index[i].key_lo = r->key_lo;
@@ -232,20 +239,31 @@ void fs_synth_init(FsSynth *s, const FsFont *font, uint32_t sample_rate) {
     }
     fs_eq_init(&s->eq, s->sample_rate);
     s->eq_gs[0] = 0; s->eq_gs[1] = 0x40; s->eq_gs[2] = 0; s->eq_gs[3] = 0x40;
+    fs_synth_set_width(s, 100);
     memset(s->send_reverb, 0, sizeof(s->send_reverb));
     memset(s->send_chorus, 0, sizeof(s->send_chorus));
 #if FS_ENABLE_REVERB
-    fs_reverb_init(&s->reverb, s->sample_rate);
+#if FS_EFFECTS_EXTERNAL
+    if (!s->reverb) s->reverb = FS_EXTERNAL_ALLOC(sizeof(FsReverb));  // Once; kept on re-init
+#else
+    s->reverb = &s->reverb_mem;
+#endif
+    if (s->reverb) fs_reverb_init(s->reverb, s->sample_rate);
 #endif
 #if FS_ENABLE_CHORUS
-    fs_chorus_init(&s->chorus, s->sample_rate);
+#if FS_EFFECTS_EXTERNAL
+    if (!s->chorus) s->chorus = FS_EXTERNAL_ALLOC(sizeof(FsChorus));
+#else
+    s->chorus = &s->chorus_mem;
+#endif
+    if (s->chorus) fs_chorus_init(s->chorus, s->sample_rate);
 #endif
 }
 
 // See fs_synth.h. Clamps every value to 0..1.
 void fs_synth_set_reverb(FsSynth *s, float room, float damp, float width, float level) {
 #if FS_ENABLE_REVERB
-    fs_reverb_set(&s->reverb, fs_clampf(room, 0.0f, 1.0f), fs_clampf(damp, 0.0f, 1.0f),
+    if (s->reverb) fs_reverb_set(s->reverb, fs_clampf(room, 0.0f, 1.0f), fs_clampf(damp, 0.0f, 1.0f),
                   fs_clampf(width, 0.0f, 1.0f), fs_clampf(level, 0.0f, 1.0f));
 #else
     (void)s; (void)room; (void)damp; (void)width; (void)level;
@@ -260,6 +278,13 @@ void fs_synth_set_eq(FsSynth *s, float low_hz, float low_db, float high_hz, floa
 
 // See fs_synth.h. Stores the GS parameter (clamped to its legal range; it
 // is what settings.c saves) and rebuilds the EQ from all four.
+// See fs_synth.h.
+void fs_synth_set_width(FsSynth *s, uint8_t percent) {
+    if (percent > 100) percent = 100;
+    s->width_pct = percent;
+    s->width = (float)percent * 0.01f;
+}
+
 void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value) {
     if (param > 3) return;
     if (param == 1 || param == 3) value = value < 0x34 ? 0x34 : value > 0x4c ? 0x4c : value;
@@ -272,7 +297,7 @@ void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value) {
 // See fs_synth.h. The base delay is fixed at 12 ms.
 void fs_synth_set_chorus(FsSynth *s, float rate_hz, float depth_ms, float level) {
 #if FS_ENABLE_CHORUS
-    fs_chorus_set(&s->chorus, s->sample_rate, fs_clampf(rate_hz, 0.01f, 10.0f), FS_CHORUS_DEFAULT_BASE,
+    if (s->chorus) fs_chorus_set(s->chorus, s->sample_rate, fs_clampf(rate_hz, 0.01f, 10.0f), FS_CHORUS_DEFAULT_BASE,
                   fs_clampf(depth_ms, 0.0f, 20.0f), fs_clampf(level, 0.0f, 4.0f));
 #else
     (void)s; (void)rate_hz; (void)depth_ms; (void)level;
@@ -322,7 +347,7 @@ void FS_RAM_FUNC(fs_synth_note_on)(FsSynth *s, uint8_t chan, uint8_t key, uint8_
     for (uint32_t r = 0; r < preset->region_count; ++r) {
         const uint32_t ri = preset->region_first + r;
         uint8_t xc;
-        if (ri < FS_REGION_INDEX_SIZE) {
+        if (ri < s->region_indexed) {
             const uint8_t *e = &s->region_index[ri].key_lo;
             if (key < e[0] || key > e[1] || vel < e[2] || vel > e[3]) continue;
             xc = s->region_index[ri].exclusive_class;
@@ -492,6 +517,9 @@ void FS_RAM_FUNC(fs_synth_midi)(FsSynth *s, const uint8_t *msg, uint32_t len) {
                 if (((0x40 + 0x02 + msg[7] + msg[8] + msg[9]) & 0x7f) == 0) fs_synth_set_eq_gs(s, msg[7], msg[8]);
             } else if (status == 0xf0 && len >= 7 && msg[1] == 0x7f && msg[3] == 0x04 && msg[4] == 0x01) {
                 fs_synth_set_master_volume(s, (uint16_t)((msg[5] & 0x7f) | ((msg[6] & 0x7f) << 7)));
+            } else if (status == 0xf0 && len == 7 && msg[1] == 0x7d && msg[2] == 0x46 && msg[3] == 0x53 &&
+                       msg[4] == 0x03) {
+                fs_synth_set_width(s, msg[5]); // pico-fsynth stereo width: F0 7D 46 53 03 ww F7
             }
             break;
         default: break; // Poly pressure not supported
@@ -526,10 +554,10 @@ void FS_RAM_FUNC(fs_synth_render_part)(FsSynth *s, uint32_t part) {
     const uint32_t t0 = FS_CYCLE_COUNT();
     if (part == 0) {
 #if FS_ENABLE_REVERB
-        if (reverb) fs_reverb_process(&s->reverb, s->send_reverb, s->bus_l[0], s->bus_r[0], B);
+        if (reverb && s->reverb) fs_reverb_process(s->reverb, s->send_reverb, s->bus_l[0], s->bus_r[0], B);
 #endif
 #if FS_ENABLE_CHORUS
-        if (chorus) fs_chorus_process(&s->chorus, s->send_chorus, s->bus_l[0], s->bus_r[0], B);
+        if (chorus && s->chorus) fs_chorus_process(s->chorus, s->send_chorus, s->bus_l[0], s->bus_r[0], B);
 #endif
     }
     const FsBuses buses = {
@@ -597,6 +625,17 @@ void FS_RAM_FUNC(fs_synth_render_end_float)(FsSynth *s, float *left, float *righ
     }
 
     fs_eq_process(&s->eq, bus_l, bus_r, B);
+
+    // Stereo width: scale the side (difference) signal
+    if (s->width_pct < 100) {
+        const float w = s->width;
+        for (int k = 0; k < B; ++k) {
+            const float mid = (bus_l[k] + bus_r[k]) * 0.5f;
+            const float side = (bus_l[k] - bus_r[k]) * 0.5f * w;
+            bus_l[k] = mid + side;
+            bus_r[k] = mid - side;
+        }
+    }
 
     const float g = s->gain * s->master_volume;
     float peak = s->stats.peak;

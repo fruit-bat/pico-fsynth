@@ -53,6 +53,11 @@ typedef struct {
     uint32_t start_count;
 } FsSynthStats;
 
+// One region in the note-on index (FsSynth.region_index)
+typedef struct {
+    uint8_t key_lo, key_hi, vel_lo, vel_hi, exclusive_class;
+} FsRegionIndexEntry;
+
 // The whole synthesizer state. Treat it as opaque except stats and the
 // documented setters; fields are public only so it can be allocated
 // statically.
@@ -82,9 +87,14 @@ typedef struct {
     float declick_decay;                // Per-sample decay factor (1 ms time constant)
     uint32_t serial;                    // Last voice serial handed out
 
-    // Key and velocity ranges and exclusive class of the font's regions,
-    // in RAM (see FS_REGION_INDEX_SIZE)
-    struct { uint8_t key_lo, key_hi, vel_lo, vel_hi, exclusive_class; } region_index[FS_REGION_INDEX_SIZE];
+    // Key and velocity ranges and exclusive class of the font's first
+    // region_indexed regions, in RAM (see FS_REGION_INDEX_SIZE): inline, or
+    // allocated by fs_synth_init when FS_REGION_INDEX_EXTERNAL
+    FsRegionIndexEntry *region_index;
+    uint32_t region_indexed;
+#if !FS_REGION_INDEX_EXTERNAL
+    FsRegionIndexEntry region_index_mem[FS_REGION_INDEX_SIZE];
+#endif
 
     // Active voices per channel and key, for the voice stealing policy
     uint8_t key_voices[FS_MIDI_CHANNELS][128];
@@ -104,15 +114,25 @@ typedef struct {
     float send_reverb[FS_BLOCK_SIZE];
     float send_chorus[FS_BLOCK_SIZE];
 
+    // Effect state: inline, or allocated by fs_synth_init when
+    // FS_EFFECTS_EXTERNAL (NULL if that failed; the effect is then skipped)
 #if FS_ENABLE_REVERB
-    FsReverb reverb;
+    FsReverb *reverb;
+#if !FS_EFFECTS_EXTERNAL
+    FsReverb reverb_mem;
+#endif
 #endif
 #if FS_ENABLE_CHORUS
-    FsChorus chorus;
+    FsChorus *chorus;
+#if !FS_EFFECTS_EXTERNAL
+    FsChorus chorus_mem;
+#endif
 #endif
 
     FsEq eq;                    // Master EQ (GS SysEx 40 02 0x)
     uint8_t eq_gs[4];           // GS EQ parameters: low freq, low gain, high freq, high gain
+    uint8_t width_pct;          // Stereo width in percent, 0..100 (default 100)
+    float width;                // The same, 0..1
 
     FsSynthStats stats;
 } FsSynth;
@@ -140,6 +160,13 @@ void fs_synth_set_eq(FsSynth *s, float low_hz, float low_db, float high_hz, floa
 // GS EQ parameter (address 40 02 0p): p = 0 low freq (0/1), 1 low gain
 // (0x34..0x4c, 0x40 = 0 dB), 2 high freq (0/1), 3 high gain
 void fs_synth_set_eq_gs(FsSynth *s, uint8_t param, uint8_t value);
+
+// Stereo width, 0..100 percent (larger values are taken as 100): scales the
+// difference between left and right of the final mix (mid/side), so 100
+// (the default) leaves it as the MIDI and font pan it, 50 pulls a hard
+// panned part halfway to the centre, 0 is mono. Not changed by resets.
+// SysEx F0 7D 46 53 03 ww F7 (host/stereo_width.sh).
+void fs_synth_set_width(FsSynth *s, uint8_t percent);
 
 // Switch effects at runtime (when compiled in). Default on.
 static inline void fs_synth_set_effects(FsSynth *s, bool reverb, bool chorus) {
@@ -184,7 +211,8 @@ void fs_synth_reset(FsSynth *s);    // GM reset: controllers, programs, sound of
 // Dispatch a complete MIDI message (status byte first, no running status)
 // to the functions above. Also understands these SysEx messages (msg
 // starts F0, ends F7): GM System On, GM2 System On and GS Reset (all
-// fs_synth_reset), GM Master Volume and GS master EQ. Others are ignored.
+// fs_synth_reset), GM Master Volume, GS master EQ and the stereo width SysEx above. Others
+// are ignored.
 void fs_synth_midi(FsSynth *s, const uint8_t *msg, uint32_t len);
 
 // Render FS_BLOCK_SIZE stereo frames as interleaved int16 (L, R, L, R...).

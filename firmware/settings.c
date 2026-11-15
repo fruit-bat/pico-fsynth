@@ -16,7 +16,7 @@
 
 #define SETTINGS_OFFSET (PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE)  // Last 4 KB sector
 #define SETTINGS_MAGIC 0x54534653u   // "FSST"
-#define SETTINGS_VERSION 1
+#define SETTINGS_VERSION 2   // 2 added width_pct
 
 // Stored record. New fields go at the end with a version bump; older
 // records keep working for the fields they have.
@@ -26,8 +26,20 @@ typedef struct {
     uint32_t size;              // sizeof(Settings) when written
     float master_volume;        // 0..1
     uint8_t eq_gs[4];           // GS EQ parameters: low freq, low gain, high freq, high gain
+    uint8_t width_pct;          // Stereo width, percent (version 2)
+    uint8_t pad[3];
     uint32_t crc;               // CRC32 of the bytes before it
 } Settings;
+
+// Version 1 record: no width
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t size;
+    float master_volume;
+    uint8_t eq_gs[4];
+    uint32_t crc;
+} SettingsV1;
 
 _Static_assert(sizeof(Settings) <= FLASH_PAGE_SIZE, "settings fit in one flash page");
 
@@ -37,15 +49,23 @@ bool settings_available(const FsFont *font) {
 }
 
 // See settings.h. A stored volume outside 0..1 (or NaN) is replaced by full
-// volume; EQ values are range-checked by fs_synth_set_eq_gs().
+// volume; EQ values are range-checked by fs_synth_set_eq_gs() and width by
+// fs_synth_set_width(). A version 1 record leaves the width at its default.
 bool settings_load(FsSynth *synth) {
     const Settings *s = (const Settings *)(XIP_BASE + SETTINGS_OFFSET);
-    if (s->magic != SETTINGS_MAGIC || s->version != SETTINGS_VERSION || s->size != sizeof(Settings)) return false;
-    if (s->crc != fs_crc32(0, s, offsetof(Settings, crc))) return false;
+    if (s->magic != SETTINGS_MAGIC) return false;
+    if (s->version == 1) {
+        const SettingsV1 *s1 = (const SettingsV1 *)s;
+        if (s1->size != sizeof(SettingsV1) || s1->crc != fs_crc32(0, s1, offsetof(SettingsV1, crc))) return false;
+    } else if (s->version != SETTINGS_VERSION || s->size != sizeof(Settings) ||
+               s->crc != fs_crc32(0, s, offsetof(Settings, crc))) {
+        return false;
+    }
     float v = s->master_volume;
     if (!(v >= 0.0f && v <= 1.0f)) v = 1.0f;
     fs_synth_set_master_volume(synth, (uint16_t)(v * 16383.0f + 0.5f));
     for (uint8_t p = 0; p < 4; ++p) fs_synth_set_eq_gs(synth, p, s->eq_gs[p]);
+    if (s->version >= 2) fs_synth_set_width(synth, s->width_pct);
     return true;
 }
 
@@ -70,6 +90,7 @@ void settings_save(const FsSynth *synth) {
         .version = SETTINGS_VERSION,
         .size = sizeof(Settings),
         .master_volume = synth->master_volume,
+        .width_pct = synth->width_pct,
     };
     memcpy(s.eq_gs, synth->eq_gs, sizeof(s.eq_gs));
     s.crc = fs_crc32(0, &s, offsetof(Settings, crc));

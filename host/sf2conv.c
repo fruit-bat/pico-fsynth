@@ -29,12 +29,18 @@
 // on error: any fatal problem calls die(), which exits. Recoverable
 // problems in the source font are counted by warn() and listed with -v.
 //
-// Usage: sf2conv [-v] [--compress[=fast|small]] [--vel-filter=spec|fluid|off] input.sf2 output.fsf
+// Usage: sf2conv [-v] [--compress[=fast|small]] [--vel-filter=off|fluid|spec] [--keep=LIST]
+//                input.sf2 output.fsf
 //   -v            list each warning about the source font
 //   --compress    store the samples losslessly compressed (fs_codec.h):
 //                 fast (default) decodes quickly, small packs tighter
 //   --vel-filter  how to treat the SF2 default "velocity to filter cutoff"
-//                 modulator (see fs_gen.c); default fluid
+//                 modulator (see fs_gen.c); default off, which is what
+//                 FluidSynth 2.4 does (measured: renders match only then)
+//   --keep        keep only these presets: comma separated banks ("0") and
+//                 bank:program pairs ("128:0"), e.g. --keep=0,128:0 for a
+//                 GM-only font (only the samples they use are stored). The
+//                 synth falls back to bank 0 / drum kit 0 for the rest.
 //
 #include <stdio.h>
 #include <stdlib.h>
@@ -513,18 +519,56 @@ static int compare_u32(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+// --keep list: presets of `bank`, programs lo..hi
+typedef struct { uint16_t bank; uint8_t lo, hi; } KeepRange;
+static KeepRange keep[1024];    // Enough for every bank:program pair of a GM + GS set
+static int keep_count = -1;     // -1 = keep everything
+
+// Parse a --keep list ("0,128:0"). Returns false if malformed.
+static bool parse_keep(const char *s) {
+    keep_count = 0;
+    while (*s) {
+        char *end;
+        const long bank = strtol(s, &end, 10);
+        if (end == s || bank < 0 || bank > 128 || keep_count == (int)(sizeof(keep) / sizeof(keep[0]))) return false;
+        long lo = 0, hi = 127;
+        s = end;
+        if (*s == ':') {
+            lo = hi = strtol(s + 1, &end, 10);
+            if (end == s + 1 || lo < 0 || lo > 127) return false;
+            s = end;
+        }
+        keep[keep_count++] = (KeepRange){ (uint16_t)bank, (uint8_t)lo, (uint8_t)hi };
+        if (*s == ',') ++s;
+        else if (*s) return false;
+    }
+    return keep_count > 0;
+}
+
+// True if the --keep list (if any) includes this preset
+static bool kept(uint16_t bank, uint16_t program) {
+    if (keep_count < 0) return true;
+    for (int i = 0; i < keep_count; ++i) {
+        if (keep[i].bank == bank && program >= keep[i].lo && program <= keep[i].hi) return true;
+    }
+    return false;
+}
+
 // Print the command line help and exit with status 2.
 static void usage(void) {
     fprintf(stderr,
-        "usage: sf2conv [-v] [--compress[=fast|small]] [--vel-filter=spec|fluid|off] input.sf2 output.fsf\n"
+        "usage: sf2conv [-v] [--compress[=fast|small]] [--vel-filter=off|fluid|spec] [--keep=LIST]\n"
+        "               input.sf2 output.fsf\n"
         "  -v            list warnings about the source font\n"
         "  --compress    store the samples losslessly compressed:\n"
         "                fast  bit-packed blocks, quick to decode (default)\n"
         "                small Rice coded blocks, about 10%% smaller, slower to decode\n"
         "  --vel-filter  default 'velocity to filter cutoff' modulator:\n"
-        "                fluid as FluidSynth: velocities of 64 and above lower the cutoff (default)\n"
+        "                off   none, as FluidSynth 2.4 plays (default)\n"
+        "                fluid as FluidSynth's source describes: velocities of 64 and above lower the cutoff\n"
         "                spec  as SF2 2.01: velocities below 64 lower the cutoff\n"
-        "                off   no default velocity to filter modulator\n");
+        "  --keep        only these presets, e.g. --keep=0,128:0 (bank 0 and drum kit 0):\n"
+        "                comma separated banks and bank:program pairs\n");
     exit(2);
 }
 
@@ -540,7 +584,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < FS_DEFAULT_MODULATOR_COUNT; ++i) {
         if (default_mods[i].dst == FS_GEN_INITIAL_FILTER_FC) vel_filter = &default_mods[i];
     }
-    const char *vel_filter_mode = "fluid";
+    const char *vel_filter_mode = "off";
     bool compress = false;
     FsCodecMode codec_mode = FS_CODEC_FAST;
 
@@ -551,6 +595,7 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[argi], "--compress") == 0 || strcmp(argv[argi], "--compress=fast") == 0) compress = true;
         else if (strcmp(argv[argi], "--compress=small") == 0) { compress = true; codec_mode = FS_CODEC_SMALL; }
         else if (strncmp(argv[argi], "--vel-filter=", 13) == 0) vel_filter_mode = argv[argi] + 13;
+        else if (strncmp(argv[argi], "--keep=", 7) == 0) { if (!parse_keep(argv[argi] + 7)) usage(); }
         else usage();
         ++argi;
     }
@@ -814,10 +859,11 @@ int main(int argc, char **argv) {
     }
 
     // Sort presets by (bank, program) and drop duplicates, keeping the one
-    // that comes first in the file
+    // that comes first in the file, and presets not in the --keep list
     qsort(presets, preset_count, sizeof(PendingPreset), compare_presets);
     uint32_t unique = 0;
     for (uint32_t i = 0; i < preset_count; ++i) {
+        if (!kept(presets[i].preset.bank, presets[i].preset.program)) continue;
         if (unique > 0 && preset_key(&presets[unique - 1]) == preset_key(&presets[i])) {
             warn("duplicate preset bank %u program %u, keeping first", presets[i].preset.bank, presets[i].preset.program);
             continue;

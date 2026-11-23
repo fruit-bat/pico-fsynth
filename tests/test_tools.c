@@ -42,7 +42,8 @@ static uint8_t *read_file(const char *path, size_t *size) {
 
 // Convert presets/instruments to tt_<name>.fsf and load it. Returns the
 // blob (free it) or NULL if conversion or loading failed.
-static uint8_t *convert(const char *name, const SwPreset *p, int np, const SwInst *in, int ni, FsFont *font) {
+static uint8_t *convert_opts(const char *name, const SwPreset *p, int np, const SwInst *in, int ni, FsFont *font,
+                             const char *opts) {
     char sf2[256], fsf[256];
     snprintf(sf2, sizeof(sf2), "tt_%s.sf2", name);
     snprintf(fsf, sizeof(fsf), "tt_%s.fsf", name);
@@ -50,7 +51,9 @@ static uint8_t *convert(const char *name, const SwPreset *p, int np, const SwIns
     uint8_t *data = sw_build(p, np, in, ni, &size);
     CHECK_EQ(sw_write_file(sf2, data, size), 0);
     free(data);
-    const int st = run("'%s' -v '%s' '%s' >/dev/null 2>&1", sf2conv, sf2, fsf);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "'%%s' -v %s '%%s' '%%s' >/dev/null 2>&1", opts);
+    const int st = run(cmd, sf2conv, sf2, fsf);
     CHECK_EQ(st, 0);
     if (st != 0) return NULL;
     uint8_t *blob = read_file(fsf, &size);
@@ -60,6 +63,10 @@ static uint8_t *convert(const char *name, const SwPreset *p, int np, const SwIns
     CHECK_EQ(res, FS_FONT_OK);
     if (res != FS_FONT_OK) { free(blob); return NULL; }
     return blob;
+}
+
+static uint8_t *convert(const char *name, const SwPreset *p, int np, const SwInst *in, int ni, FsFont *font) {
+    return convert_opts(name, p, np, in, ni, font, "");
 }
 
 TEST(sf2conv_basic) {
@@ -78,8 +85,37 @@ TEST(sf2conv_basic) {
     CHECK_EQ(r->sample_rate, 44100);
     CHECK_EQ(r->loop_mode, FS_LOOP_CONTINUOUS);
     CHECK_EQ(r->loop_end - r->loop_start, 1000);
-    CHECK_EQ(r->mod_count, FS_DEFAULT_MODULATOR_COUNT);
+    // Default --vel-filter=off drops the velocity to filter cutoff modulator
+    CHECK_EQ(r->mod_count, FS_DEFAULT_MODULATOR_COUNT - 1);
     free(blob);
+    blob = convert_opts("basic_fluid", presets, 2, insts, 1, &font, "--vel-filter=fluid");
+    if (!blob) return;
+    CHECK_EQ(font.regions[0].mod_count, FS_DEFAULT_MODULATOR_COUNT);
+    free(blob);
+}
+
+// --keep: only the listed banks / presets, and only the samples they use
+TEST(sf2conv_keep) {
+    const SwInst insts[] = { { 0, 127, 0 } };
+    const SwPreset presets[] = {
+        { "Piano", 0, 0, 0 }, { "Organ", 0, 16, 0 }, { "Var", 8, 0, 0 }, { "Drums", 128, 0, 0 }, { "Kit 2", 128, 8, 0 },
+    };
+    FsFont font;
+    uint8_t *blob = convert_opts("keep", presets, 5, insts, 1, &font, "--keep=0,128:0");
+    if (!blob) return;
+    CHECK_EQ(font.header->preset_count, 3);
+    CHECK_EQ(font.presets[0].program, 0);
+    CHECK_EQ(font.presets[1].program, 16);
+    CHECK_EQ(font.presets[2].bank, 128);
+    CHECK_EQ(font.presets[2].program, 0);
+    free(blob);
+    blob = convert_opts("keep1", presets, 5, insts, 1, &font, "--keep=0:16");
+    if (!blob) return;
+    CHECK_EQ(font.header->preset_count, 1);
+    CHECK_EQ(font.presets[0].program, 16);
+    free(blob);
+    // Malformed lists are refused
+    CHECK(run("'%s' --keep=0:x '%s' '%s' >/dev/null 2>&1", sf2conv, "tt_keep.sf2", "tt_keep_bad.fsf") != 0);
 }
 
 // Regression: with duplicate bank/program the first preset in the file is
@@ -187,6 +223,7 @@ int main(int argc, char **argv) {
     sf2conv = argv[1];
     fsrender = argv[2];
     RUN(sf2conv_basic);
+    RUN(sf2conv_keep);
     RUN(sf2conv_duplicate_presets);
     RUN(sf2conv_exclusive_class_range);
     RUN(sf2conv_bad_input);

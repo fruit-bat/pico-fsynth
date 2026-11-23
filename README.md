@@ -41,10 +41,28 @@ fast costs about 6% more CPU than uncompressed. Compression is mainly a
 way to fit bigger fonts. The format is described in `core/fs_codec.h`. The
 firmware still reads version 1 (uncompressed) fonts.
 
-`sf2conv -v` lists warnings about the source font. `--vel-filter=fluid|spec|off`
+`sf2conv -v` lists warnings about the source font. `--vel-filter=off|fluid|spec`
 chooses how the default "velocity to filter cutoff" modulator behaves:
-`fluid` (default) matches FluidSynth, `spec` follows the SF2 2.01 text (soft
-notes get darker), `off` removes it.
+`off` (default) removes it, which is what FluidSynth 2.4 actually plays
+(renders match it only this way), `fluid` lowers the cutoff for velocities
+64..126 as FluidSynth's source describes, `spec` follows the SF2 2.01 text
+(soft notes get darker).
+
+`--keep=LIST` keeps only some presets, and only the samples they use: whole
+banks (`0`) and single presets (`128:0`), comma separated. A program that
+is not in the font falls back to bank 0, then to 0:0 (drum kits to kit 0);
+if that is missing too, the channel is silent, so keep 0:0 unless the music
+sets a program on every channel it uses. For example GeneralUser GS (27 MB
+with `--compress`) is too big for a 16 MB Pico, but a font of just the
+instruments a game's tunes use is small:
+
+```sh
+./build-host/sf2conv --compress --keep=0,128:0 GeneralUser-GS.sf2 gm.fsf            # GM only: 23.8 MB
+./build-host/sf2conv --compress --keep=0:78,0:11,0:38,128:0 GeneralUser-GS.sf2 t.fsf  # 4 presets: 2.2 MB
+```
+
+`host/font_fit.py` picks as many presets as fit in a given size; see
+"Squeezing a GM font into 16 MB" under Firmware.
 
 ## Rendering on the PC
 
@@ -110,6 +128,58 @@ or make a drag-and-drop UF2 of the font:
 ```sh
 picotool uf2 convert build-host/TimGM6mb.fsf -t bin build-host/font.uf2 -o 0x10200000 --family rp2350-arm-s
 ```
+
+Copy the firmware UF2 and the font UF2 separately: the boot ROM reboots once
+it has all of the first file. Or merge them into one UF2 and flash both
+in one go:
+
+```sh
+host/uf2_merge.py build-host/fsynth+font.uf2 build/pico_fsynth.uf2 build-host/font.uf2
+cp build-host/fsynth+font.uf2 /media/$USER/RP2350/ && sync      # a 29 MB copy takes about 4 minutes
+```
+
+### Squeezing a GM font into 16 MB
+
+The font has the flash from 0x200000 (2 MB, after the firmware) up to the
+settings sector at 0xFFF000: 0xDFF000 bytes (14.68 MB) on a 16 MB board
+such as the RP2350-Plus. GeneralUser GS 2.0.3 is 27 MB with `--compress`, and
+its GM set alone (bank 0 + drum kit 128:0) is still 23.8 MB. So keep as many
+GM presets as fit. Many presets share samples, so the cheapest ones to add
+are those whose samples are already in.
+
+`host/font_fit.py` does this. It converts the GM set, orders the presets
+greedily (0:0 and 128:0 first, then any `--force` presets, then each time
+the one that adds the fewest new sample frames), then binary searches the
+number of presets with real `sf2conv` runs to find the largest font that
+fits. It writes the `.fsf`, its `--keep` list as `.keep`, and lists the
+presets that were left out. Those play on 0:0 (piano).
+
+The font on the RP2350-Plus + Pico-Audio (105 of 129 presets, 14.57 MB).
+Nylon guitar (24), strings (44, 48, 49) and flute (73) are forced in:
+
+```sh
+host/font_fit.py --force 0:24,0:44,0:48,0:49,0:73 \
+    GeneralUser-GS.sf2 build-host/GeneralUser-GM-pico.fsf
+picotool uf2 convert build-host/GeneralUser-GM-pico.fsf -t bin build-host/font.uf2 -o 0x10200000 --family rp2350-arm-s
+host/uf2_merge.py build-host/fsynth+font.uf2 build-plus-audio/pico_fsynth.uf2 build-host/font.uf2
+cp build-host/fsynth+font.uf2 /media/$USER/RP2350/ && sync
+```
+
+Left out: 4 tine electric piano, 14 tubular bells, 15 dulcimer, 19 pipe
+organ, 25/27/29/30 steel, clean, overdrive and distortion guitar, 40-43
+solo strings, 52-54 voices, 60 French horns, 61 brass section, 65 alto sax,
+84 charang, 93/94 pads, 102/103 FX, 110 fiddle. To swap some in, give
+`--force` the ones you need, and others drop out to make room. To rebuild the
+same font without the search:
+`sf2conv --compress --keep=$(cat build-host/GeneralUser-GM-pico.keep) GeneralUser-GS.sf2 out.fsf`.
+Other options: `--compress=small` (about 10% smaller, twice the decode cost),
+or `--size` for another flash size. A run takes about 20 seconds for
+GeneralUser.
+
+The compressed font costs CPU on the Pico. Reading from flash and decoding
+take about 40 cycles per voice-sample, against about 3 for uncompressed
+samples. The title tune ran at about 30% of the render core
+with 20 voices, so a full 80 voices may be near the limit.
 
 ### Connections (defaults)
 
@@ -189,10 +259,19 @@ does not touch saved settings.
 
     host/master_eq.sh 6 -6 && host/stereo_width.sh 70 && host/settings.sh save
 
-Playing a file from the PC and stopping it part way leaves notes hanging;
-`host/reset.sh` silences everything (All Sound Off and Reset All Controllers on
-every channel), `host/reset.sh -g` also sends GM System On (programs back to
-piano):
+To play files from the PC, use `host/play.sh`:
 
-    aplaymidi -p 24:0 song.mid      # Ctrl-C to stop, then
-    host/reset.sh
+    host/play.sh song.mid other.mid     # Ctrl-C stops and silences
+    host/play.sh -g song.mid            # also GM System On before each file
+    host/play.sh -p fsynth-serial song.mid
+
+Before each file it resets the controllers on every channel. Most MIDI files
+assume a freshly reset synth and never clear the mod wheel, pitch bend,
+expression or pedals, so a file played straight after another with plain
+`aplaymidi` inherits what the first one left. A leftover mod wheel, for
+example, puts heavy vibrato on a piano piece.
+
+`host/reset.sh` sends the same reset on its own (All Sound Off and Reset All
+Controllers on every channel), e.g. after stopping a plain `aplaymidi` part
+way, which leaves notes hanging. `host/reset.sh -g` also sends GM System On
+(programs back to piano).

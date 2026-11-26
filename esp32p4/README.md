@@ -4,6 +4,34 @@ Port of the synth to the Waveshare ESP32-P4-Pico (ESP32-P4NRW32: 32 MB PSRAM,
 32 MB flash). It uses the same `core/` as the RP2350 firmware. Work in
 progress.
 
+## Ready-made images
+
+Releases and the GitHub Actions runs (see "Ready-made files" in the main
+README) include ESP32-P4 images with the full GeneralUser GS font. To write
+them you only need esptool (`pip install esptool`), not ESP-IDF. Plug in the
+Type-C port; if esptool cannot connect, see "Talking to the board" below.
+
+Use `rev1` for chips before v3.0 (most P4-Pico boards so far) and `rev3` for
+v3.0 and later. `esptool chip-id` prints the revision. A rev1 image will not
+boot on a v3 chip, and a rev3 image will not boot on an older one. The rev3
+images are built but have not been tried on a board.
+
+```sh
+# First time: everything (bootloader, partition table, app, font), about 4 minutes.
+# This also clears saved settings (volume, EQ, width).
+esptool --chip esp32p4 -b 2000000 write-flash 0x0 fsynth-p4-rev1+GeneralUser-GS.bin
+
+# Updating the app later (keeps the font and saved settings)
+esptool --chip esp32p4 -b 2000000 write-flash 0x10000 fsynth-p4-rev1-app.bin
+
+# Changing just the font
+esptool --chip esp32p4 -b 2000000 write-flash 0x110000 font-GeneralUser-GS-p4.fsf
+```
+
+The images use `sdkconfig` as it is in the repository (Pico-Audio pins, USB
+MIDI on, 128 voices). `host/make_p4_bins.sh` builds them, and runs the same
+locally after `. ~/esp/esp-idf-v6.1.1/export.sh`.
+
 ## Installing ESP-IDF (once)
 
 ESP-IDF is Espressif's SDK. It includes the build system, the RISC-V

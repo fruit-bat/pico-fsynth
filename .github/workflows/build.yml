@@ -1,11 +1,13 @@
-# Builds the RP2350 firmware and the GeneralUser GS font as UF2 files, ready
-# to drag onto the board in BOOTSEL mode (see host/make_uf2s.sh).
+# Builds ready-to-flash files for both boards, with the GeneralUser GS font:
+#   RP2350  UF2 files to drag onto the board in BOOTSEL mode (host/make_uf2s.sh)
+#   ESP32-P4  images to write with esptool (host/make_p4_bins.sh)
 #
-#   push / pull request   tests, firmware and font UF2s (run artifacts)
-#   tag v*                the same plus firmware + font merged, as a release
-#   Run workflow (Actions tab, also on a fork): your own board, font and
-#                         options, merged UF2s as run artifacts
-name: UF2
+#   push / pull request   tests, RP2350 firmware and font UF2s, ESP32-P4
+#                         images (run artifacts)
+#   tag v*                all of that plus the merged RP2350 UF2s, as a release
+#   Run workflow (Actions tab, also on a fork): your own boards, font and
+#                         options, as run artifacts
+name: Build
 
 on:
   push:
@@ -14,26 +16,37 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      targets:
+        description: 'Which boards to build'
+        type: choice
+        options: [both, rp2350, esp32p4]
+        default: both
       variants:
-        description: 'Audio boards: pico-audio, pico-audio-v21, i2s, pwm (comma separated)'
+        description: 'RP2350 audio: pico-audio, pico-audio-v21, i2s, pwm (comma separated)'
         default: 'pico-audio,pico-audio-v21,i2s,pwm'
       board:
-        description: 'PICO_BOARD (an RP2350 board in pico-sdk/src/boards)'
+        description: 'RP2350 PICO_BOARD (an RP2350 board in pico-sdk/src/boards)'
         default: 'waveshare_rp2350_plus_16mb'
       flash_mb:
-        description: 'Flash size in MB (must match the board; the font gets this less 2 MB)'
+        description: 'RP2350 flash size in MB (must match the board; the font gets this less 2 MB)'
         default: '16'
-      sf2_url:
-        description: 'URL of a .sf2 to use (empty: GeneralUser GS 2.0.3)'
-        default: ''
       force:
-        description: 'Presets to always keep when fitting, bank:program list'
+        description: 'RP2350: presets to always keep when fitting, bank:program list'
         default: '0:24,0:44,0:48,0:49,0:73'
-      keep:
-        description: 'Keep exactly these presets instead of fitting (sf2conv --keep syntax)'
-        default: ''
       cmake:
-        description: 'Extra firmware cmake options, e.g. -DFS_MAX_VOICES=64 -DFS_MIDI_UART_RX_PIN=1'
+        description: 'RP2350: extra cmake options, e.g. -DFS_MAX_VOICES=64 -DFS_MIDI_UART_RX_PIN=1'
+        default: ''
+      p4_revs:
+        description: 'ESP32-P4 chip revisions: rev1 (before v3.0), rev3 (v3.0 and later)'
+        default: 'rev1,rev3'
+      p4_sdkconfig:
+        description: 'ESP32-P4: extra sdkconfig settings, space separated, e.g. CONFIG_FSYNTH_MAX_VOICES=96'
+        default: ''
+      sf2_url:
+        description: 'Both: URL of a .sf2 to use (empty: GeneralUser GS 2.0.3)'
+        default: ''
+      keep:
+        description: 'Both: keep exactly these presets (sf2conv --keep syntax; empty: RP2350 fits, P4 keeps all)'
         default: ''
 
 permissions:
@@ -44,7 +57,8 @@ env:
   PICOTOOL_VERSION: '2.3.0'
 
 jobs:
-  build:
+  rp2350:
+    if: github.event_name != 'workflow_dispatch' || inputs.targets != 'esp32p4'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -117,7 +131,7 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: rp2350-firmware
           path: |
             build-dist/out/pico_fsynth-*.uf2
             !build-dist/out/*+*.uf2
@@ -126,7 +140,7 @@ jobs:
       - name: Upload font
         uses: actions/upload-artifact@v4
         with:
-          name: font
+          name: rp2350-font
           path: |
             build-dist/out/font-*
             build-dist/out/*LICENSE*
@@ -136,13 +150,69 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
         uses: actions/upload-artifact@v4
         with:
-          name: merged
+          name: rp2350-merged
           path: build-dist/out/*+*.uf2
+          retention-days: 30
+
+  esp32p4:
+    if: github.event_name != 'workflow_dispatch' || inputs.targets != 'rp2350'
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v6.1.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host compiler
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends gcc libc6-dev
+          git config --global --add safe.directory '*'
+
+      - name: Cache GeneralUser GS
+        uses: actions/cache@v4
+        with:
+          path: build-dist/GeneralUser-GS.sf2
+          key: generaluser-gs-9575028c7a1f
+
+      - name: Get the SoundFont
+        if: github.event_name == 'workflow_dispatch' && inputs.sf2_url != ''
+        env:
+          SF2_URL: ${{ inputs.sf2_url }}
+        run: |
+          mkdir -p build-dist
+          curl -fsSL -o build-dist/custom.sf2 "$SF2_URL"
+
+      - name: Build
+        shell: bash
+        env:
+          REVS: ${{ inputs.p4_revs }}
+          SDK_EXTRA: ${{ inputs.p4_sdkconfig }}
+          SF2_URL: ${{ inputs.sf2_url }}
+          KEEP: ${{ inputs.keep }}
+        run: |
+          . "$IDF_PATH/export.sh" >/dev/null
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [ -n "$REVS" ] && args+=(--revs "$REVS")
+            [ -n "$SDK_EXTRA" ] && args+=(--sdkconfig "$SDK_EXTRA")
+            [ -n "$SF2_URL" ] && args+=(--sf2 build-dist/custom.sf2)
+            [ -n "$KEEP" ] && args+=(--keep "$KEEP")
+          fi
+          host/make_p4_bins.sh "${args[@]}"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32p4
+          path: |
+            build-dist/out/fsynth-p4-*.bin
+            build-dist/out/font-*-p4.*
+            build-dist/out/FLASHING-P4.txt
+            build-dist/out/*LICENSE*
           retention-days: 30
 
   release:
     if: github.ref_type == 'tag'
-    needs: build
+    needs: [rp2350, esp32p4]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -100,24 +100,29 @@ To add a test, add a `TEST(name)` function to the relevant `tests/test_*.c`
 and `RUN(name)` it from `main`; a new file also needs a line in
 `tests/CMakeLists.txt`.
 
-## Ready-made UF2 files
+## Ready-made files
 
-GitHub Actions builds UF2 files for 16 MB RP2350 boards such as the
-Waveshare RP2350-Plus (`.github/workflows/uf2.yml`):
+GitHub Actions (`.github/workflows/build.yml`) builds ready-to-flash files
+for 16 MB RP2350 boards such as the Waveshare RP2350-Plus (UF2 files), and
+for the Waveshare ESP32-P4-Pico (esptool images, see `esp32p4/README.md`):
 
-- Releases (tags `v*`) hold them all. Firmware + GeneralUser GS font in
-  one file, `pico_fsynth-VARIANT+GeneralUser-GM-16mb.uf2`, is all most people
-  need: hold BOOTSEL, plug in, and copy it to the RP2350 drive. A 29 MB copy
-  takes a few minutes.
-- Every push builds the firmware and font UF2s separately, as artifacts
-  of the run (Actions tab, the run, Artifacts). Flash both, one at a time.
-- To make your own: fork the repo, then Actions, UF2, Run workflow. GitHub
-  turns workflows off on a new fork: the first time, open the fork's Actions
-  tab and click "I understand my workflows, go ahead and enable them". Then
-  pick UF2 on the left and Run workflow on the right. Runs on public
-  repositories cost nothing. You can pick the audio boards, the `PICO_BOARD`, the flash size, another SoundFont
-  (a URL), which presets to force in or exactly which to keep, and extra cmake
-  options (pins, voices). The merged UF2s are in the run's artifacts.
+- Releases (tags `v*`) hold them all. For the RP2350, firmware + GeneralUser
+  GS font in one file, `pico_fsynth-VARIANT+GeneralUser-GM-16mb.uf2`, is all
+  most people need: hold BOOTSEL, plug in, and copy it to the RP2350 drive.
+  A 29 MB copy takes a few minutes. For the ESP32-P4,
+  `fsynth-p4-rev1+GeneralUser-GS.bin` (see `FLASHING-P4.txt`).
+- Every push builds the RP2350 firmware and font UF2s separately, and the
+  ESP32-P4 images, as artifacts of the run (Actions tab, the run,
+  Artifacts). Flash both RP2350 UF2s, one at a time.
+- To make your own: fork the repo. GitHub turns workflows off on a new
+  fork: the first time, open the fork's Actions tab and click "I understand
+  my workflows, go ahead and enable them". Then pick Build on the left and
+  Run workflow on the right. Runs on public repositories cost nothing. You
+  can pick which boards to build; for the RP2350 the audio boards, the
+  `PICO_BOARD`, the flash size, which presets to force in, and extra cmake
+  options (pins, voices); for the ESP32-P4 the chip revisions and extra
+  sdkconfig settings; and for both another SoundFont (a URL) or exactly
+  which presets to keep. The results are in the run's artifacts.
 
 | Variant | Audio out |
 |---|---|
@@ -131,13 +136,15 @@ The font file lists the presets it holds and those left out
 S. Christian Collins (https://www.schristiancollins.com/generaluser), free
 to use and redistribute; its licence comes with the font.
 
-`host/make_uf2s.sh` does the whole build (tests, font fitting, every
-firmware variant, merging). It runs the same on a PC with the pico-sdk:
+`host/make_uf2s.sh` does the whole RP2350 build (tests, font fitting, every
+firmware variant, merging), and `host/make_p4_bins.sh` the ESP32-P4 one.
+They run the same on a PC with the pico-sdk or ESP-IDF:
 
 ```sh
 host/make_uf2s.sh                                   # everything, into build-dist/out/
 host/make_uf2s.sh --variants pico-audio --cmake "-DFS_MAX_VOICES=64"
 host/make_uf2s.sh --sf2 my.sf2 --keep 0:0,0:33,128:0  # your font, these presets only
+. ~/esp/esp-idf-v6.1.1/export.sh && host/make_p4_bins.sh --revs rev1
 ```
 
 ## Firmware

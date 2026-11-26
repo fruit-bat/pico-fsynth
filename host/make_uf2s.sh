@@ -58,9 +58,7 @@ out=$dist/out
 mkdir -p "$out"
 jobs=$(nproc 2>/dev/null || echo 4)
 
-# GeneralUser GS 2.0.3 by S. Christian Collins, pinned to a commit
-gu_url=https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/684543d5e5efaef08d02be50dcda8d552478fa60
-gu_sha256=9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe
+. "$root/host/generaluser.sh"
 
 echo "== host tools"
 cmake -S "$root/host" -B "$dist/host" -DCMAKE_BUILD_TYPE=Release >/dev/null
@@ -72,12 +70,7 @@ fi
 echo "== font"
 if [ -z "$sf2" ]; then
     sf2=$dist/GeneralUser-GS.sf2
-    if ! echo "$gu_sha256  $sf2" | sha256sum -c --status 2>/dev/null; then
-        curl -fsSL -o "$sf2" "$gu_url/GeneralUser-GS.sf2"
-        echo "$gu_sha256  $sf2" | sha256sum -c --quiet
-    fi
-    [ -f "$out/GeneralUser-GS-LICENSE.txt" ] ||
-        curl -fsSL -o "$out/GeneralUser-GS-LICENSE.txt" "$gu_url/documentation/LICENSE.txt"
+    generaluser_get "$sf2" "$out"
     name=GeneralUser-GM-${flash_mb}mb
 else
     name=$(basename "${sf2%.*}")-${flash_mb}mb

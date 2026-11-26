@@ -1,0 +1,159 @@
+# Builds the RP2350 firmware and the GeneralUser GS font as UF2 files, ready
+# to drag onto the board in BOOTSEL mode (see host/make_uf2s.sh).
+#
+#   push / pull request   tests, firmware and font UF2s (run artifacts)
+#   tag v*                the same plus firmware + font merged, as a release
+#   Run workflow (Actions tab, also on a fork): your own board, font and
+#                         options, merged UF2s as run artifacts
+name: UF2
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: 'Audio boards: pico-audio, pico-audio-v21, i2s, pwm (comma separated)'
+        default: 'pico-audio,pico-audio-v21,i2s,pwm'
+      board:
+        description: 'PICO_BOARD (an RP2350 board in pico-sdk/src/boards)'
+        default: 'waveshare_rp2350_plus_16mb'
+      flash_mb:
+        description: 'Flash size in MB (must match the board; the font gets this less 2 MB)'
+        default: '16'
+      sf2_url:
+        description: 'URL of a .sf2 to use (empty: GeneralUser GS 2.0.3)'
+        default: ''
+      force:
+        description: 'Presets to always keep when fitting, bank:program list'
+        default: '0:24,0:44,0:48,0:49,0:73'
+      keep:
+        description: 'Keep exactly these presets instead of fitting (sf2conv --keep syntax)'
+        default: ''
+      cmake:
+        description: 'Extra firmware cmake options, e.g. -DFS_MAX_VOICES=64 -DFS_MIDI_UART_RX_PIN=1'
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  PICO_SDK_VERSION: '2.3.0'
+  PICOTOOL_VERSION: '2.3.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib libusb-1.0-0-dev pkg-config
+
+      - name: Cache pico-sdk and picotool
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/pico
+          key: pico-sdk-${{ env.PICO_SDK_VERSION }}-picotool-${{ env.PICOTOOL_VERSION }}-ubuntu-24.04
+
+      - name: Get pico-sdk and build picotool
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$PICO_SDK_VERSION" https://github.com/raspberrypi/pico-sdk ~/pico/pico-sdk
+          git -C ~/pico/pico-sdk submodule update --init --depth 1 lib/tinyusb
+          git clone --depth 1 --branch "$PICOTOOL_VERSION" https://github.com/raspberrypi/picotool ~/pico/picotool-src
+          cmake -S ~/pico/picotool-src -B ~/pico/picotool-build -DPICO_SDK_PATH=$HOME/pico/pico-sdk \
+            -DCMAKE_INSTALL_PREFIX=$HOME/pico/picotool -DCMAKE_BUILD_TYPE=Release
+          cmake --build ~/pico/picotool-build -j "$(nproc)"
+          cmake --install ~/pico/picotool-build
+          rm -rf ~/pico/picotool-src ~/pico/picotool-build
+
+      - name: Cache GeneralUser GS
+        uses: actions/cache@v4
+        with:
+          path: build-dist/GeneralUser-GS.sf2
+          key: generaluser-gs-9575028c7a1f
+
+      - name: Get the SoundFont
+        if: github.event_name == 'workflow_dispatch' && inputs.sf2_url != ''
+        env:
+          SF2_URL: ${{ inputs.sf2_url }}
+        run: |
+          mkdir -p build-dist
+          curl -fsSL -o build-dist/custom.sf2 "$SF2_URL"
+
+      - name: Build
+        env:
+          VARIANTS: ${{ inputs.variants }}
+          BOARD: ${{ inputs.board }}
+          FLASH_MB: ${{ inputs.flash_mb }}
+          SF2_URL: ${{ inputs.sf2_url }}
+          FORCE: ${{ inputs.force }}
+          KEEP: ${{ inputs.keep }}
+          CMAKE_EXTRA: ${{ inputs.cmake }}
+        run: |
+          export PICO_SDK_PATH=$HOME/pico/pico-sdk
+          export picotool_DIR=$HOME/pico/picotool/lib/cmake/picotool
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            [ -n "$VARIANTS" ] && args+=(--variants "$VARIANTS")
+            [ -n "$BOARD" ] && args+=(--board "$BOARD")
+            [ -n "$FLASH_MB" ] && args+=(--flash-mb "$FLASH_MB")
+            [ -n "$SF2_URL" ] && args+=(--sf2 build-dist/custom.sf2)
+            [ -n "$FORCE" ] && args+=(--force "$FORCE")
+            [ -n "$KEEP" ] && args+=(--keep "$KEEP")
+            [ -n "$CMAKE_EXTRA" ] && args+=(--cmake "$CMAKE_EXTRA")
+          elif [ "$GITHUB_REF_TYPE" != tag ]; then
+            args+=(--no-merge)          # keeps push and PR artifacts small
+          fi
+          host/make_uf2s.sh "${args[@]}"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            build-dist/out/pico_fsynth-*.uf2
+            !build-dist/out/*+*.uf2
+          retention-days: 30
+
+      - name: Upload font
+        uses: actions/upload-artifact@v4
+        with:
+          name: font
+          path: |
+            build-dist/out/font-*
+            build-dist/out/*LICENSE*
+          retention-days: 30
+
+      - name: Upload merged (firmware + font)
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged
+          path: build-dist/out/*+*.uf2
+          retention-days: 30
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes dist/*

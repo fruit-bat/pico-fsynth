@@ -49,7 +49,7 @@ const FsModulator fs_default_modulators[FS_DEFAULT_MODULATOR_COUNT] = {
     // source (TimGM6mb does so in 148 zones).
     // FluidSynth uses a positive switch instead (velocities of 64 and above
     // lower the cutoff). sf2conv --vel-filter selects spec, fluid or off and
-    // defaults to fluid.
+    // defaults to off (FluidSynth 2.4 does not apply this modulator at all).
     { SRC(FS_MOD_GC_VELOCITY, 0, 1, 0, FS_MOD_TYPE_LINEAR), FS_GEN_INITIAL_FILTER_FC, -2400,
       SRC(FS_MOD_GC_VELOCITY, 0, 1, 0, FS_MOD_TYPE_SWITCH), 0, 0 },
     // 8.4.3 MIDI channel pressure to vibrato LFO pitch depth

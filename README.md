@@ -100,6 +100,46 @@ To add a test, add a `TEST(name)` function to the relevant `tests/test_*.c`
 and `RUN(name)` it from `main`; a new file also needs a line in
 `tests/CMakeLists.txt`.
 
+## Ready-made UF2 files
+
+GitHub Actions builds UF2 files for 16 MB RP2350 boards such as the
+Waveshare RP2350-Plus (`.github/workflows/uf2.yml`):
+
+- Releases (tags `v*`) hold them all. Firmware + GeneralUser GS font in
+  one file, `pico_fsynth-VARIANT+GeneralUser-GM-16mb.uf2`, is all most people
+  need: hold BOOTSEL, plug in, and copy it to the RP2350 drive. A 29 MB copy
+  takes a few minutes.
+- Every push builds the firmware and font UF2s separately, as artifacts
+  of the run (Actions tab, the run, Artifacts). Flash both, one at a time.
+- To make your own: fork the repo, then Actions, UF2, Run workflow. GitHub
+  turns workflows off on a new fork: the first time, open the fork's Actions
+  tab and click "I understand my workflows, go ahead and enable them". Then
+  pick UF2 on the left and Run workflow on the right. Runs on public
+  repositories cost nothing. You can pick the audio boards, the `PICO_BOARD`, the flash size, another SoundFont
+  (a URL), which presets to force in or exactly which to keep, and extra cmake
+  options (pins, voices). The merged UF2s are in the run's artifacts.
+
+| Variant | Audio out |
+|---|---|
+| `pico-audio` | Waveshare Pico-Audio (PCM5101A) stacked under the board |
+| `pico-audio-v21` | Waveshare Pico-Audio Rev2.1 (CS4344) |
+| `i2s` | an I2S DAC on GPIO 12 (data), 13 (BCLK), 14 (LRCLK) |
+| `pwm` | PWM on GPIO 20/21, with an RC filter on each |
+
+The font file lists the presets it holds and those left out
+(`font-*.txt`, see "Squeezing a GM font into 16 MB"). GeneralUser GS is by
+S. Christian Collins (https://www.schristiancollins.com/generaluser), free
+to use and redistribute; its licence comes with the font.
+
+`host/make_uf2s.sh` does the whole build (tests, font fitting, every
+firmware variant, merging). It runs the same on a PC with the pico-sdk:
+
+```sh
+host/make_uf2s.sh                                   # everything, into build-dist/out/
+host/make_uf2s.sh --variants pico-audio --cmake "-DFS_MAX_VOICES=64"
+host/make_uf2s.sh --sf2 my.sf2 --keep 0:0,0:33,128:0  # your font, these presets only
+```
+
 ## Firmware
 
 ```sh
@@ -123,10 +163,11 @@ picotool load -t bin build-host/TimGM6mb.fsf -o 0x10200000   # once per font
 picotool load -x build/pico_fsynth.uf2                        # firmware
 ```
 
-or make a drag-and-drop UF2 of the font:
+or make a drag-and-drop UF2 of the font (`picotool uf2 convert ... -t bin
+-o 0x10200000 --family rp2350-arm-s` gives the same file):
 
 ```sh
-picotool uf2 convert build-host/TimGM6mb.fsf -t bin build-host/font.uf2 -o 0x10200000 --family rp2350-arm-s
+host/uf2_merge.py build-host/font.uf2 build-host/TimGM6mb.fsf@0x10200000
 ```
 
 Copy the firmware UF2 and the font UF2 separately: the boot ROM reboots once
@@ -134,8 +175,8 @@ it has all of the first file. Or merge them into one UF2 and flash both
 in one go:
 
 ```sh
-host/uf2_merge.py build-host/fsynth+font.uf2 build/pico_fsynth.uf2 build-host/font.uf2
-cp build-host/fsynth+font.uf2 /media/$USER/RP2350/ && sync      # a 29 MB copy takes about 4 minutes
+host/uf2_merge.py build-host/fsynth+font.uf2 build/pico_fsynth.uf2 build-host/TimGM6mb.fsf@0x10200000
+cp build-host/fsynth+font.uf2 /media/$USER/RP2350/ && sync      # about 4 minutes for a 15 MB font
 ```
 
 ### Squeezing a GM font into 16 MB
@@ -160,8 +201,8 @@ Nylon guitar (24), strings (44, 48, 49) and flute (73) are forced in:
 ```sh
 host/font_fit.py --force 0:24,0:44,0:48,0:49,0:73 \
     GeneralUser-GS.sf2 build-host/GeneralUser-GM-pico.fsf
-picotool uf2 convert build-host/GeneralUser-GM-pico.fsf -t bin build-host/font.uf2 -o 0x10200000 --family rp2350-arm-s
-host/uf2_merge.py build-host/fsynth+font.uf2 build-plus-audio/pico_fsynth.uf2 build-host/font.uf2
+host/uf2_merge.py build-host/fsynth+font.uf2 build-plus-audio/pico_fsynth.uf2 \
+    build-host/GeneralUser-GM-pico.fsf@0x10200000
 cp build-host/fsynth+font.uf2 /media/$USER/RP2350/ && sync
 ```
 
@@ -275,3 +316,41 @@ example, puts heavy vibrato on a piano piece.
 Controllers on every channel), e.g. after stopping a plain `aplaymidi` part
 way, which leaves notes hanging. `host/reset.sh -g` also sends GM System On
 (programs back to piano).
+
+## Credits
+
+pico-fsynth is MIT licensed (`LICENSE`). It builds on, or learned from,
+the work of others:
+
+- **GeneralUser GS** by S. Christian Collins
+  (https://www.schristiancollins.com/generaluser,
+  https://github.com/mrbumpy409/GeneralUser-GS). The font in the ready-made
+  UF2s, and the reference for most of the tuning. Free to use, modify and
+  redistribute (its `LICENSE.txt`, shipped with the font).
+- **TimGM6mb** by Tim Brechbill, GPL-2.0. The small GM font used for
+  development and tests. It is not part of this repository; one copy comes
+  with pretty-midi (https://github.com/craffel/pretty-midi/).
+- **FluidSynth** (https://www.fluidsynth.org/, LGPL-2.1). The reference
+  renderer: default modulators, filter Q, gain, effect levels and the
+  velocity-to-filter behaviour were matched against its renders and source.
+  No FluidSynth code is used.
+- **Freeverb** by Jezar at Dreampoint (public domain). The reverb's
+  structure, delay lengths and scale factors (`core/fs_effects.c`).
+- **Audio EQ Cookbook** by Robert Bristow-Johnson. The low pass filter and
+  master EQ shelf formulas.
+- **FLAC** (https://xiph.org/flac/). The fixed polynomial predictors and Rice
+  coding used by `sf2conv --compress` (`core/fs_codec.h`). Our own format and
+  code.
+- **SoundFont 2.01 specification** (E-mu Systems / Creative Technology). The
+  font format, generators, modulators and their defaults.
+- **Raspberry Pi Pico SDK** and **picotool** (BSD-3-Clause,
+  https://github.com/raspberrypi/pico-sdk), including **TinyUSB** by Ha Thach
+  (MIT, https://github.com/hathach/tinyusb) for USB MIDI.
+- **ESP-IDF** and **esp_tinyusb** by Espressif (Apache-2.0) for the ESP32-P4
+  port.
+- **UF2** by Microsoft (https://github.com/microsoft/uf2), the flashing
+  format `host/uf2_merge.py` writes.
+- **ALSA** and alsa-utils (`aplaymidi`, `amidi`, `aseqsend`) for the PC
+  scripts and the serial MIDI bridge.
+- Waveshare for the RP2350-Plus, Pico-Audio and ESP32-P4 boards and their
+  documentation.
